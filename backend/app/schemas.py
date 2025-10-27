@@ -2,6 +2,28 @@ from pydantic import BaseModel
 from typing import Optional, List, Literal, Any
 from datetime import datetime, date
 from .models import TaskStatus, TaskEventType, Role
+from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional, List
+
+class CommentCreate(BaseModel):
+    text: str
+
+class CommentOut(BaseModel):
+    id: int
+    author: Optional[str] = None
+    text: str
+    created_at: datetime
+    class Config: orm_mode = True
+
+class TaskUpdate(BaseModel):
+    title: Optional[str] = None
+    address: Optional[str] = None
+    due_at: Optional[datetime] = None
+    reason: Optional[str] = None
+    checklist: Optional[list] = None
+    assignee_user_id: Optional[int] = None
+    status: Optional[str] = None
 
 class UserOut(BaseModel):
     id: int

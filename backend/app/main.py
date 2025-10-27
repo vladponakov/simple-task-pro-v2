@@ -10,6 +10,11 @@ from .models import Task, TaskStatus, TaskEventType, User, Student, Absence, Rol
 from .schemas import TaskIn, TaskOut, TaskEdit, AssignIn, StatusIn, TaskEventOut, AbsenceIn, AbsenceOut, StudentIn, StudentOut, HistoryItem, UserOut
 from .deps import get_current_user, require_admin
 from .utils import log_event, soft_delete, restore
+from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy.orm import Session
+from app.db import Base, engine, get_db
+from app.models import Task, Comment
+from app.schemas import TaskUpdate, CommentCreate, CommentOut
 
 app = FastAPI(title="Simple Task Pro API v2")
 
@@ -31,6 +36,40 @@ def health():
 @app.get("/api/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
     return user
+
+@app.patch("/api/tasks/{task_id}")
+def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # bare feltene som kommer inn
+    for field, value in payload.dict(exclude_unset=True).items():
+        setattr(task, field, value)
+
+    db.add(task); db.commit(); db.refresh(task)
+    return {"ok": True, "id": task.id}
+
+@app.get("/api/tasks/{task_id}/comments", response_model=list[CommentOut])
+def list_comments(task_id: int, db: Session = Depends(get_db)):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    items = db.query(Comment).filter(Comment.task_id == task_id).order_by(Comment.created_at.asc()).all()
+    return items
+
+@app.post("/api/tasks/{task_id}/comments", response_model=CommentOut)
+def add_comment(task_id: int, body: CommentCreate, db: Session = Depends(get_db)):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    author = (  # les “X-User” til visningsnavn hvis du ønsker
+        "Anna" if "anna" == "anna" else None
+    )
+    c = Comment(task_id=task_id, author=author, text=body.text.strip())
+    db.add(c); db.commit(); db.refresh(c)
+    return c
 
 # Students
 @app.post("/api/students", response_model=StudentOut, dependencies=[Depends(require_admin)])
