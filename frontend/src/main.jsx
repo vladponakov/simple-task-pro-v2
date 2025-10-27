@@ -28,6 +28,38 @@ const onlyDateStr = (d) => {
   }
 };
 
+const fmtNO = (iso) =>
+  iso
+    ? new Date(iso).toLocaleString("no-NO", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "-";
+
+const dNO = (iso) =>
+  iso
+    ? new Date(iso).toLocaleDateString("no-NO", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      })
+    : "-";
+
+const toIso = (v) => {
+  if (!v) return null;
+  const d = typeof v === "string" ? new Date(v) : v;
+  return isNaN(d) ? null : d.toISOString();
+};
+
+const todayAt = (hh = 10, mm = 0) => {
+  const d = new Date();
+  d.setHours(hh, mm, 0, 0);
+  return d.toISOString();
+};
+
 function buildSmartRouteUrl(addresses) {
   if (!addresses || addresses.length === 0) return null;
   const enc = (s) => encodeURIComponent(s || "London");
@@ -43,15 +75,22 @@ function buildSmartRouteUrl(addresses) {
 
 const minutes = (n) => Math.round(n);
 function estimateDurations(stops) {
-  const perStop = 15,
-    perHop = 12;
+  const perStop = 15;
+  const perHop = 12;
   const total = stops.length * perStop + Math.max(0, stops.length - 1) * perHop;
   return { totalMinutes: total, perStop, perHop };
 }
 
+const USERS = [
+  { id: 1, name: "Anna (Admin)" },
+  { id: 2, name: "Ulf (User 1)" },
+  { id: 3, name: "Una (User 2)" },
+  { id: 4, name: "Liam (User 3)" },
+];
+
 /* ---------------- Auth / Login ---------------- */
 function Login({ onDemoLogin, onGoogleLogin }) {
-  const USERS = [
+  const USERS_LOGIN = [
     { id: "anna", label: "Admin (Anna)" },
     { id: "ulf", label: "User 1 (Ulf)" },
     { id: "una", label: "User 2 (Una)" },
@@ -84,7 +123,7 @@ function Login({ onDemoLogin, onGoogleLogin }) {
             value={who}
             onChange={(e) => setWho(e.target.value)}
           >
-            {USERS.map((u) => (
+            {USERS_LOGIN.map((u) => (
               <option key={u.id} value={u.id}>
                 {u.label}
               </option>
@@ -121,7 +160,7 @@ function Login({ onDemoLogin, onGoogleLogin }) {
 }
 
 /* ---------------- Header ---------------- */
-function Header({ compact, setCompact, onOpenSmartRoute, todaysCount }) {
+function Header({ compact, setCompact, onOpenSmartRoute, todaysCount, onCreate }) {
   const [me, setMe] = useState(null);
   useEffect(() => {
     API("/api/me").then(setMe).catch(() => {});
@@ -168,9 +207,322 @@ function Header({ compact, setCompact, onOpenSmartRoute, todaysCount }) {
         <button className="btn" onClick={() => setCompact(!compact)}>
           {compact ? "Compact: ON" : "Compact: OFF"}
         </button>
+        <button className="btn" onClick={onCreate}>+ New task → User 1</button>
         <button className="btn btn-primary" onClick={onOpenSmartRoute}>
           Smart Route (today){todaysCount ? ` • ${todaysCount}` : ""}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Comments ---------------- */
+function TaskComments({ taskId }) {
+  const [comments, setComments] = useState([]);
+  const [text, setText] = useState("");
+
+  const load = () =>
+    API(`/api/tasks/${taskId}/comments`).then(setComments).catch(() => setComments([]));
+
+  useEffect(load, [taskId]);
+
+  const add = async () => {
+    const val = text.trim();
+    if (!val) return;
+    await API(`/api/tasks/${taskId}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ text: val }),
+    });
+    setText("");
+    load();
+  };
+
+  return (
+    <div className="card" style={{ marginTop: 10 }}>
+      <strong>Comments</strong>
+      <ul style={{ marginTop: 8 }}>
+        {comments.map((c) => (
+          <li key={c.id} style={{ marginBottom: 6, color: "var(--muted)" }}>
+            <span style={{ opacity: .8 }}>{c.author || "User"}</span>
+            {" • "}
+            <span style={{ opacity: .7 }}>{new Date(c.created_at).toLocaleString("no-NO")}</span>
+            <div>{c.text}</div>
+          </li>
+        ))}
+      </ul>
+      <div className="row" style={{ gap: 8, marginTop: 8 }}>
+        <input
+          className="input"
+          placeholder="Write a comment…"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+        <button className="btn btn-primary" onClick={add}>Add</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Modal (Create) ---------------- */
+function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
+  const [students, setStudents] = useState([]);
+  const [studentId, setStudentId] = useState("");
+  const [title, setTitle] = useState("");
+  const [address, setAddress] = useState("");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    API("/api/students").then(setStudents).catch(() => setStudents([]));
+  }, []);
+
+  useEffect(() => {
+    const onEsc = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onEsc);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onEsc);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  const createTask = async () => {
+    if (!studentId) { setErr("Select student"); return; }
+    if (!title.trim()) { setErr("Title is required"); return; }
+    setSaving(true); setErr("");
+    try {
+      await API(`/api/tasks`, {
+        method: "POST",
+        body: JSON.stringify({
+          student_id: Number(studentId),
+          title: title.trim(),
+          address: address.trim() || null,
+          body: null,
+          due_at: todayAt(10, 0),          // auto “i dag 10:00”
+          assignee_user_id: defaultAssigneeId,  // → User 1 (Ulf)
+          status: "Assigned",
+          reason: reason || null,
+          checklist: [],
+        }),
+      });
+      await onCreated();
+      onClose();
+    } catch (e) {
+      setErr(e?.message || "Failed to create");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>New Task → User 1</h3>
+
+        {err && <div className="alert error">{err}</div>}
+
+        <label className="label">Student</label>
+        <select className="select" value={studentId} onChange={(e) => setStudentId(e.target.value)}>
+          <option value="">Select…</option>
+          {students.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+
+        <label className="label">Title</label>
+        <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+
+        <label className="label">Address</label>
+        <input className="input" value={address} onChange={(e) => setAddress(e.target.value)} />
+
+        <label className="label">Reason</label>
+        <textarea className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
+
+        <div className="meta" style={{ marginTop: 8, opacity: .8 }}>
+          Due: today 10:00 (set automatically)
+        </div>
+
+        <div className="btns" style={{ marginTop: 12 }}>
+          <button className="btn" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn btn-primary" onClick={createTask} disabled={saving}>
+            {saving ? "Creating..." : "Create"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Modal (Edit) ---------------- */
+function EditModal({ task, onClose, onSaved }) {
+  const isAdmin = (localStorage.getItem("user") || "anna") === "anna";
+
+  const [title, setTitle] = useState(task.title);
+  const [address, setAddress] = useState(task.address || "");
+  const [dueAt, setDueAt] = useState(task.due_at || "");
+  const [reason, setReason] = useState(task.reason || "");
+  const [assignee, setAssignee] = useState(task.assignee_user_id || 2);
+
+  const [checklist, setChecklist] = useState(Array.isArray(task.checklist) ? task.checklist : []);
+  const [newItem, setNewItem] = useState("");
+
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    const onEsc = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onEsc);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onEsc);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  const addItem = () => {
+    const t = newItem.trim();
+    if (!t) return;
+    setChecklist([...checklist, { text: t, done: false }]);
+    setNewItem("");
+  };
+  const toggleItem = (idx) => {
+    const copy = checklist.slice();
+    copy[idx] = { ...copy[idx], done: !copy[idx].done };
+    setChecklist(copy);
+  };
+  const removeItem = (idx) => {
+    const copy = checklist.slice();
+    copy.splice(idx, 1);
+    setChecklist(copy);
+  };
+
+  const payloadBase = {
+    title,
+    address: address || null,
+    due_at: toIso(dueAt) || null,
+    reason: reason || null,
+    checklist,
+  };
+
+  const save = async () => {
+    setSaving(true); setErr("");
+    try {
+      await API(`/api/tasks/${task.id}`, {
+        method: "PUT",
+        body: JSON.stringify(payloadBase),
+      });
+      await onSaved();
+      onClose();
+    } catch (e) {
+      setErr(e?.message || "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveAndAssignToday = async () => {
+    setSaving(true); setErr("");
+    try {
+      // 1) Oppdater felt
+      await API(`/api/tasks/${task.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ ...payloadBase, due_at: todayAt(10, 0), status: "Assigned" }),
+      });
+      // 2) Sett assignee via dedikert endpoint
+      await API(`/api/tasks/${task.id}/assign`, {
+        method: "POST",
+        body: JSON.stringify({ assignee_user_id: Number(assignee) }),
+      });
+      await onSaved();
+      onClose();
+    } catch (e) {
+      setErr(e?.message || "Failed to save & assign");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>Edit task</h3>
+        {err && <div className="alert error">{err}</div>}
+
+        <label className="label">Title</label>
+        <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+
+        <label className="label">Address</label>
+        <input className="input" value={address} onChange={(e) => setAddress(e.target.value)} />
+
+        <label className="label">Due (yyyy-mm-dd hh:mm)</label>
+        <input className="input" value={dueAt || ""} onChange={(e) => setDueAt(e.target.value)} />
+
+        <label className="label">Reason</label>
+        <textarea className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
+
+        <div className="card" style={{ marginTop: 10 }}>
+          <strong>Checklist</strong>
+          <ul style={{ marginTop: 8 }}>
+            {checklist.map((it, i) => (
+              <li key={i} className="row" style={{ gap: 8 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!it.done}
+                    onChange={() => toggleItem(i)}
+                  />
+                  <input
+                    className="input"
+                    value={it.text}
+                    onChange={(e) => {
+                      const copy = checklist.slice();
+                      copy[i] = { ...copy[i], text: e.target.value };
+                      setChecklist(copy);
+                    }}
+                  />
+                </label>
+                <button className="btn btn-danger" onClick={() => removeItem(i)}>Remove</button>
+              </li>
+            ))}
+          </ul>
+          <div className="row" style={{ gap: 8, marginTop: 8 }}>
+            <input
+              className="input"
+              placeholder="Add checklist item…"
+              value={newItem}
+              onChange={(e) => setNewItem(e.target.value)}
+            />
+            <button className="btn" onClick={addItem}>Add</button>
+          </div>
+        </div>
+
+        <div className="row" style={{ gap: 8, marginTop: 10 }}>
+          <label className="label" style={{ margin: 0 }}>Assign to</label>
+          <select
+            className="select"
+            value={assignee}
+            onChange={(e) => setAssignee(e.target.value)}
+          >
+            {USERS.map((u) => (
+              <option key={u.id} value={u.id}>{u.name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="btns" style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}>
+          <button className="btn" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn" onClick={save} disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </button>
+          <button className="btn btn-primary" onClick={saveAndAssignToday} disabled={saving}>
+            {saving ? "Working..." : "Save & Assign (today)"}
+          </button>
+        </div>
+
+        <TaskComments taskId={task.id} />
       </div>
     </div>
   );
@@ -180,7 +532,9 @@ function Header({ compact, setCompact, onOpenSmartRoute, todaysCount }) {
 function useTasks() {
   const [tasks, setTasks] = useState([]);
   const reload = () => API("/api/tasks").then(setTasks).catch(() => setTasks([]));
-  useEffect(reload, []);
+  useEffect(() => {
+    reload();
+  }, []);
   return { tasks, reload };
 }
 
@@ -271,8 +625,13 @@ function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact }) {
         </div>
       </div>
       <div className="meta">
-        Due: {t.due_at || "-"} • Address: {t.address || "-"}
+        Due: {fmtNO(t.due_at)} • Address: {t.address || "-"}
       </div>
+      {t.reason && (
+        <div className="meta" style={{ marginTop: 4, opacity: .85 }}>
+          Reason: {t.reason}
+        </div>
+      )}
       <div className="btns">
         <button
           className="btn"
@@ -283,11 +642,6 @@ function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact }) {
         >
           History
         </button>
-        {isAdmin && (
-          <button className="btn" onClick={() => setShowEdit(true)}>
-            Edit
-          </button>
-        )}
         <button
           className="btn"
           onClick={() =>
@@ -301,6 +655,11 @@ function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact }) {
         >
           Open in Maps
         </button>
+        {isAdmin && (
+          <button className="btn" onClick={() => setShowEdit(true)}>
+            Edit
+          </button>
+        )}
         <button className="btn" onClick={() => act("accept")}>
           Accept
         </button>
@@ -340,8 +699,8 @@ function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact }) {
             {history.map((h, i) => (
               <li key={i} style={{ color: "var(--muted)" }}>
                 {h.kind === "absence"
-                  ? `[Absence] ${h.date} • ${h.reason_code} • ${h.reported_by} • ${h.note || ""}`
-                  : `[Visit] ${h.date} • ${h.title}`}
+                  ? `[Absence] ${dNO(h.date)} • ${h.reason_code} • ${h.reported_by} • ${h.note || ""}`
+                  : `[Visit] ${dNO(h.date)} • ${h.title}`}
               </li>
             ))}
           </ul>
@@ -351,7 +710,17 @@ function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact }) {
   );
 }
 
-function Column({ title, filter, dropAction, tasks, reload, bulkMode, selection, toggleSelect, compact }) {
+function Column({
+  title,
+  filter,
+  dropAction,
+  tasks,
+  reload,
+  bulkMode,
+  selection,
+  toggleSelect,
+  compact,
+}) {
   const [dropping, setDropping] = useState(false);
   const list = tasks.filter(filter);
   const onDragOver = (e) => {
@@ -456,7 +825,7 @@ function BulkBar({ selection, reload }) {
 }
 
 /* ---------------- Admin Board ---------------- */
-function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
+function AdminBoard({ compact, tasks, reload, isAdmin, meId, onCreate }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [user, setUser] = useState("");
@@ -518,6 +887,11 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
         bulkMode={bulkMode}
         setBulkMode={setBulkMode}
       />
+      <div className="row" style={{ padding: "0 8px 8px", gap: 8 }}>
+        <button className="btn btn-primary" onClick={onCreate}>
+          + New task → User 1
+        </button>
+      </div>
       <div className="board">
         {isAdmin ? (
           <>
@@ -534,6 +908,7 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
           </>
         )}
       </div>
+      <BulkBar selection={selection} reload={reload} />
     </>
   );
 }
@@ -567,7 +942,7 @@ function RouteTab({ tasksForMeToday }) {
             <small className="badge">{t.status}</small>
           </div>
           <div className="meta">
-            Due: {t.due_at || "-"} • Address: {t.address || "-"}
+            Due: {fmtNO(t.due_at)} • Address: {t.address || "-"}
           </div>
           <div className="btns">
             <button
@@ -595,6 +970,7 @@ function App() {
   const [compact, setCompact] = useState(false);
   const [activeTab, setActiveTab] = useState("board");
   const [authed, setAuthed] = useState(!!localStorage.getItem("user"));
+  const [showCreate, setShowCreate] = useState(false);
   const { tasks, reload } = useTasks();
 
   const path = window.location.pathname;
@@ -643,6 +1019,7 @@ function App() {
         setCompact={setCompact}
         onOpenSmartRoute={openSmartRoute}
         todaysCount={todaysCount}
+        onCreate={() => setShowCreate(true)}
       />
       <div className="tabs">
         <button
@@ -659,9 +1036,24 @@ function App() {
         </button>
       </div>
       {activeTab === "board" ? (
-        <AdminBoard compact={compact} tasks={tasks} reload={reload} isAdmin={isAdmin} meId={meId} />
+        <AdminBoard
+          compact={compact}
+          tasks={tasks}
+          reload={reload}
+          isAdmin={isAdmin}
+          meId={meId}
+          onCreate={() => setShowCreate(true)}
+        />
       ) : (
         <RouteTab tasksForMeToday={tasksForMeToday} />
+      )}
+
+      {showCreate && (
+        <CreateModal
+          defaultAssigneeId={2}
+          onClose={() => setShowCreate(false)}
+          onCreated={reload}
+        />
       )}
     </>
   );
