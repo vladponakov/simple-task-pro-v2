@@ -65,7 +65,7 @@ def add_comment(task_id: int, body: CommentCreate, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail="Task not found")
 
     author = (  # les “X-User” til visningsnavn hvis du ønsker
-        "Anna" if "anna" == "anna" else None
+        "paddy" if "paddy" == "paddy" else None
     )
     c = Comment(task_id=task_id, author=author, text=body.text.strip())
     db.add(c); db.commit(); db.refresh(c)

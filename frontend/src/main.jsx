@@ -9,7 +9,7 @@ const FLAGS = { dnd: true, bulk: true, filters: true, modernTheme: true };
 const API = (path, opts = {}) =>
   fetch(`http://localhost:8000${path}`, {
     headers: {
-      "X-User": localStorage.getItem("user") || "anna",
+      "X-User": localStorage.getItem("user") || "paddy",
       "Content-Type": "application/json",
     },
     ...opts,
@@ -82,7 +82,7 @@ function estimateDurations(stops) {
 }
 
 const USERS = [
-  { id: 1, name: "Anna (Admin)" },
+  { id: 1, name: "Paddy MacGrath (Admin)" },
   { id: 2, name: "Ulf (User 1)" },
   { id: 3, name: "Una (User 2)" },
   { id: 4, name: "Liam (User 3)" },
@@ -91,19 +91,19 @@ const USERS = [
 /* ---------------- Auth / Login ---------------- */
 function Login({ onDemoLogin, onGoogleLogin }) {
   const USERS_LOGIN = [
-    { id: "anna", label: "Admin (Anna)" },
+    { id: "paddy", label: "Admin (paddy)" },
     { id: "ulf", label: "User 1 (Ulf)" },
     { id: "una", label: "User 2 (Una)" },
     { id: "liam", label: "User 3 (Liam)" },
   ];
-  const DEMO_PW = { anna: "admin123", ulf: "user1", una: "user2", liam: "user3" };
+  const DEMO_PW = { paddy: "admin123", ulf: "user1", una: "user2", liam: "user3" };
 
-  const [who, setWho] = useState("anna");
+  const [who, setWho] = useState("paddy");
   const [pw, setPw] = useState("");
 
   const login = () => {
     if ((DEMO_PW[who] || "") !== pw.trim()) {
-      alert("Wrong password. Demo → anna:admin123, ulf:user1, una:user2, liam:user3");
+      alert("Wrong password. Demo → paddy:admin123, ulf:user1, una:user2, liam:user3");
       return;
     }
     onDemoLogin(who);
@@ -152,7 +152,7 @@ function Login({ onDemoLogin, onGoogleLogin }) {
         </button>
 
         <div className="sub" style={{ marginTop: 10, fontSize: 12 }}>
-          Demo creds → anna:admin123, ulf:user1, una:user2, liam:user3
+          Demo creds → paddy:admin123, ulf:user1, una:user2, liam:user3
         </div>
       </div>
     </div>
@@ -165,8 +165,8 @@ function Header({ compact, setCompact, onOpenSmartRoute, todaysCount, onCreate }
   useEffect(() => {
     API("/api/me").then(setMe).catch(() => {});
   }, []);
-  const role = localStorage.getItem("user") || "anna";
-  const isAdmin = role === "anna";
+  const role = localStorage.getItem("user") || "paddy";
+  const isAdmin = role === "paddy";
 
   return (
     <div className="app-header">
@@ -183,7 +183,7 @@ function Header({ compact, setCompact, onOpenSmartRoute, todaysCount, onCreate }
               location.reload();
             }}
           >
-            <option value="anna">Anna (Admin)</option>
+            <option value="paddy">Paddy MacGrath (Admin)</option>
             <option value="ulf">Ulf (User 1)</option>
             <option value="una">Una (User 2)</option>
             <option value="liam">Liam (User 3)</option>
@@ -207,7 +207,11 @@ function Header({ compact, setCompact, onOpenSmartRoute, todaysCount, onCreate }
         <button className="btn" onClick={() => setCompact(!compact)}>
           {compact ? "Compact: ON" : "Compact: OFF"}
         </button>
-        <button className="btn" onClick={onCreate}>+ New task → User 1</button>
+        {isAdmin && (
+          <button className="btn" onClick={onCreate}>
+            + New Task
+          </button>
+        )}
         <button className="btn btn-primary" onClick={onOpenSmartRoute}>
           Smart Route (today){todaysCount ? ` • ${todaysCount}` : ""}
         </button>
@@ -222,7 +226,9 @@ function TaskComments({ taskId }) {
   const [text, setText] = useState("");
 
   const load = () =>
-    API(`/api/tasks/${taskId}/comments`).then(setComments).catch(() => setComments([]));
+    API(`/api/tasks/${taskId}/comments`)
+      .then(setComments)
+      .catch(() => setComments([]));
 
   useEffect(load, [taskId]);
 
@@ -243,9 +249,11 @@ function TaskComments({ taskId }) {
       <ul style={{ marginTop: 8 }}>
         {comments.map((c) => (
           <li key={c.id} style={{ marginBottom: 6, color: "var(--muted)" }}>
-            <span style={{ opacity: .8 }}>{c.author || "User"}</span>
+            <span style={{ opacity: 0.8 }}>{c.author || "User"}</span>
             {" • "}
-            <span style={{ opacity: .7 }}>{new Date(c.created_at).toLocaleString("no-NO")}</span>
+            <span style={{ opacity: 0.7 }}>
+              {new Date(c.created_at).toLocaleString("no-NO")}
+            </span>
             <div>{c.text}</div>
           </li>
         ))}
@@ -257,7 +265,9 @@ function TaskComments({ taskId }) {
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
-        <button className="btn btn-primary" onClick={add}>Add</button>
+        <button className="btn btn-primary" onClick={add}>
+          Add
+        </button>
       </div>
     </div>
   );
@@ -289,9 +299,16 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
   }, [onClose]);
 
   const createTask = async () => {
-    if (!studentId) { setErr("Select student"); return; }
-    if (!title.trim()) { setErr("Title is required"); return; }
-    setSaving(true); setErr("");
+    if (!studentId) {
+      setErr("Select student");
+      return;
+    }
+    if (!title.trim()) {
+      setErr("Title is required");
+      return;
+    }
+    setSaving(true);
+    setErr("");
     try {
       await API(`/api/tasks`, {
         method: "POST",
@@ -300,8 +317,8 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
           title: title.trim(),
           address: address.trim() || null,
           body: null,
-          due_at: todayAt(10, 0),          // auto “i dag 10:00”
-          assignee_user_id: defaultAssigneeId,  // → User 1 (Ulf)
+          due_at: todayAt(10, 0), // auto today 10:00
+          assignee_user_id: defaultAssigneeId, // default → Ulf
           status: "Assigned",
           reason: reason || null,
           checklist: [],
@@ -319,15 +336,21 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>New Task → User 1</h3>
+        <h3>New Task</h3>
 
         {err && <div className="alert error">{err}</div>}
 
         <label className="label">Student</label>
-        <select className="select" value={studentId} onChange={(e) => setStudentId(e.target.value)}>
+        <select
+          className="select"
+          value={studentId}
+          onChange={(e) => setStudentId(e.target.value)}
+        >
           <option value="">Select…</option>
           {students.map((s) => (
-            <option key={s.id} value={s.id}>{s.name}</option>
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
           ))}
         </select>
 
@@ -340,12 +363,14 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
         <label className="label">Reason</label>
         <textarea className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
 
-        <div className="meta" style={{ marginTop: 8, opacity: .8 }}>
+        <div className="meta" style={{ marginTop: 8, opacity: 0.8 }}>
           Due: today 10:00 (set automatically)
         </div>
 
         <div className="btns" style={{ marginTop: 12 }}>
-          <button className="btn" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
           <button className="btn btn-primary" onClick={createTask} disabled={saving}>
             {saving ? "Creating..." : "Create"}
           </button>
@@ -356,21 +381,22 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
 }
 
 /* ---------------- Modal (Edit) ---------------- */
-function EditModal({ task, onClose, onSaved }) {
-  const isAdmin = (localStorage.getItem("user") || "anna") === "anna";
-
+function EditModal({ task, onClose, onSaved, isAdmin }) {
   const [title, setTitle] = useState(task.title);
   const [address, setAddress] = useState(task.address || "");
   const [dueAt, setDueAt] = useState(task.due_at || "");
   const [reason, setReason] = useState(task.reason || "");
   const [assignee, setAssignee] = useState(task.assignee_user_id || 2);
 
-  const [checklist, setChecklist] = useState(Array.isArray(task.checklist) ? task.checklist : []);
+  const [checklist, setChecklist] = useState(
+    Array.isArray(task.checklist) ? task.checklist : []
+  );
   const [newItem, setNewItem] = useState("");
 
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
+  // close on ESC, freeze background scroll
   useEffect(() => {
     const onEsc = (e) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onEsc);
@@ -408,14 +434,15 @@ function EditModal({ task, onClose, onSaved }) {
   };
 
   const save = async () => {
-    setSaving(true); setErr("");
+    setSaving(true);
+    setErr("");
     try {
       await API(`/api/tasks/${task.id}`, {
         method: "PUT",
         body: JSON.stringify(payloadBase),
       });
       await onSaved();
-      onClose();
+      onClose(); // ✅ close after save
     } catch (e) {
       setErr(e?.message || "Failed to save");
     } finally {
@@ -424,20 +451,24 @@ function EditModal({ task, onClose, onSaved }) {
   };
 
   const saveAndAssignToday = async () => {
-    setSaving(true); setErr("");
+    if (!isAdmin) return save(); // safety for non-admins
+    setSaving(true);
+    setErr("");
     try {
-      // 1) Oppdater felt
       await API(`/api/tasks/${task.id}`, {
         method: "PUT",
-        body: JSON.stringify({ ...payloadBase, due_at: todayAt(10, 0), status: "Assigned" }),
+        body: JSON.stringify({
+          ...payloadBase,
+          due_at: todayAt(10, 0),
+          status: "Assigned",
+        }),
       });
-      // 2) Sett assignee via dedikert endpoint
       await API(`/api/tasks/${task.id}/assign`, {
         method: "POST",
         body: JSON.stringify({ assignee_user_id: Number(assignee) }),
       });
       await onSaved();
-      onClose();
+      onClose(); // ✅ close after save & assign
     } catch (e) {
       setErr(e?.message || "Failed to save & assign");
     } finally {
@@ -447,8 +478,29 @@ function EditModal({ task, onClose, onSaved }) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Edit task</h3>
+      <div
+        className="modal"
+        onClick={(e) => e.stopPropagation()} // don't close when clicking inside
+      >
+        {/* Header with explicit Close (×) */}
+        <div className="row" style={{ alignItems: "center", marginBottom: 8 }}>
+          <h3 style={{ margin: 0, flex: 1 }}>Edit task</h3>
+          <button
+            className="btn"
+            onClick={onClose}
+            aria-label="Close"
+            title="Close"
+            style={{
+              padding: "6px 10px",
+              lineHeight: 1,
+              fontWeight: 700,
+              borderRadius: 8,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
         {err && <div className="alert error">{err}</div>}
 
         <label className="label">Title</label>
@@ -463,17 +515,14 @@ function EditModal({ task, onClose, onSaved }) {
         <label className="label">Reason</label>
         <textarea className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
 
+        {/* Checklist */}
         <div className="card" style={{ marginTop: 10 }}>
           <strong>Checklist</strong>
           <ul style={{ marginTop: 8 }}>
             {checklist.map((it, i) => (
               <li key={i} className="row" style={{ gap: 8 }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <input
-                    type="checkbox"
-                    checked={!!it.done}
-                    onChange={() => toggleItem(i)}
-                  />
+                <label style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+                  <input type="checkbox" checked={!!it.done} onChange={() => toggleItem(i)} />
                   <input
                     className="input"
                     value={it.text}
@@ -499,27 +548,32 @@ function EditModal({ task, onClose, onSaved }) {
           </div>
         </div>
 
-        <div className="row" style={{ gap: 8, marginTop: 10 }}>
-          <label className="label" style={{ margin: 0 }}>Assign to</label>
-          <select
-            className="select"
-            value={assignee}
-            onChange={(e) => setAssignee(e.target.value)}
-          >
-            {USERS.map((u) => (
-              <option key={u.id} value={u.id}>{u.name}</option>
-            ))}
-          </select>
-        </div>
+        {/* Assign (Admin only) */}
+        {isAdmin && (
+          <div className="row" style={{ gap: 8, marginTop: 10 }}>
+            <label className="label" style={{ margin: 0 }}>Assign to</label>
+            <select
+              className="select"
+              value={assignee}
+              onChange={(e) => setAssignee(e.target.value)}
+            >
+              {USERS.filter(u => u.id !== 1).map((u) => (
+                <option key={u.id} value={u.id}>{u.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <div className="btns" style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}>
           <button className="btn" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="btn" onClick={save} disabled={saving}>
             {saving ? "Saving..." : "Save"}
           </button>
-          <button className="btn btn-primary" onClick={saveAndAssignToday} disabled={saving}>
-            {saving ? "Working..." : "Save & Assign (today)"}
-          </button>
+          {isAdmin && (
+            <button className="btn btn-primary" onClick={saveAndAssignToday} disabled={saving}>
+              {saving ? "Working..." : "Save & Assign (today)"}
+            </button>
+          )}
         </div>
 
         <TaskComments taskId={task.id} />
@@ -527,6 +581,7 @@ function EditModal({ task, onClose, onSaved }) {
     </div>
   );
 }
+
 
 /* ---------------- Hooks ---------------- */
 function useTasks() {
@@ -585,12 +640,14 @@ function FilterBar({ setQuery, setStatus, setUser, bulkMode, setBulkMode }) {
 }
 
 /* ---------------- Task / Column / Bulk ---------------- */
-function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact }) {
+function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact, meId, isAdmin }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState([]);
   const [showEdit, setShowEdit] = useState(false);
+
   const loadHistory = () =>
     API(`/api/students/${t.student_id}/history?days=90`).then(setHistory);
+
   const act = (action, reason) =>
     API(`/api/tasks/${t.id}/status`, {
       method: "POST",
@@ -602,7 +659,7 @@ function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact }) {
     e.dataTransfer.setData("text/taskId", String(t.id));
   };
 
-  const isAdmin = (localStorage.getItem("user") || "anna") === "anna";
+  const canEdit = isAdmin || t.assignee_user_id === meId;
 
   return (
     <div
@@ -628,7 +685,7 @@ function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact }) {
         Due: {fmtNO(t.due_at)} • Address: {t.address || "-"}
       </div>
       {t.reason && (
-        <div className="meta" style={{ marginTop: 4, opacity: .85 }}>
+        <div className="meta" style={{ marginTop: 4, opacity: 0.85 }}>
           Reason: {t.reason}
         </div>
       )}
@@ -642,6 +699,13 @@ function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact }) {
         >
           History
         </button>
+
+        {canEdit && (
+          <button className="btn" onClick={() => setShowEdit(true)}>
+            Edit
+          </button>
+        )}
+
         <button
           className="btn"
           onClick={() =>
@@ -655,11 +719,6 @@ function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact }) {
         >
           Open in Maps
         </button>
-        {isAdmin && (
-          <button className="btn" onClick={() => setShowEdit(true)}>
-            Edit
-          </button>
-        )}
         <button className="btn" onClick={() => act("accept")}>
           Accept
         </button>
@@ -676,9 +735,16 @@ function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact }) {
           Complete
         </button>
       </div>
-      {isAdmin && showEdit && (
-        <EditModal task={t} onClose={() => setShowEdit(false)} onSaved={reload} />
+
+      {showEdit && (
+        <EditModal
+          task={t}
+          onClose={() => setShowEdit(false)}
+          onSaved={reload}
+          isAdmin={isAdmin}
+        />
       )}
+
       {historyOpen && (
         <div
           style={{
@@ -720,6 +786,8 @@ function Column({
   selection,
   toggleSelect,
   compact,
+  meId,
+  isAdmin,
 }) {
   const [dropping, setDropping] = useState(false);
   const list = tasks.filter(filter);
@@ -757,6 +825,8 @@ function Column({
           selected={selection.has(t.id)}
           toggleSelect={toggleSelect}
           compact={compact}
+          meId={meId}
+          isAdmin={isAdmin}
         />
       ))}
     </div>
@@ -795,7 +865,7 @@ function BulkBar({ selection, reload }) {
       ids.map((id) =>
         fetch(`http://localhost:8000/api/tasks/${id}`, {
           method: "DELETE",
-          headers: { "X-User": localStorage.getItem("user") || "anna" },
+          headers: { "X-User": localStorage.getItem("user") || "paddy" },
         })
       )
     );
@@ -875,6 +945,8 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId, onCreate }) {
       toggleSelect={toggleSelect}
       dropAction={dropAction}
       compact={compact}
+      meId={meId}
+      isAdmin={isAdmin}
     />
   );
 
@@ -887,11 +959,16 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId, onCreate }) {
         bulkMode={bulkMode}
         setBulkMode={setBulkMode}
       />
-      <div className="row" style={{ padding: "0 8px 8px", gap: 8 }}>
-        <button className="btn btn-primary" onClick={onCreate}>
-          + New task → User 1
-        </button>
-      </div>
+
+      {/* New Task button - Admin only */}
+      {isAdmin && (
+        <div className="row" style={{ padding: "0 8px 8px", gap: 8 }}>
+          <button className="btn btn-primary" onClick={onCreate}>
+            + New Task
+          </button>
+        </div>
+      )}
+
       <div className="board">
         {isAdmin ? (
           <>
@@ -908,6 +985,7 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId, onCreate }) {
           </>
         )}
       </div>
+
       <BulkBar selection={selection} reload={reload} />
     </>
   );
@@ -989,9 +1067,9 @@ function App() {
 
   if (!authed) return <Login onDemoLogin={onDemoLogin} onGoogleLogin={onGoogleLogin} />;
 
-  const role = localStorage.getItem("user") || "anna";
+  const role = localStorage.getItem("user") || "paddy";
   const meId = role === "ulf" ? 2 : role === "una" ? 3 : role === "liam" ? 4 : 1;
-  const isAdmin = role === "anna";
+  const isAdmin = role === "paddy";
 
   const todayISO = new Date().toISOString().slice(0, 10);
   const myAssigned = (tasks || []).filter(
@@ -1048,7 +1126,8 @@ function App() {
         <RouteTab tasksForMeToday={tasksForMeToday} />
       )}
 
-      {showCreate && (
+      {/* Admin-only create modal */}
+      {isAdmin && showCreate && (
         <CreateModal
           defaultAssigneeId={2}
           onClose={() => setShowCreate(false)}

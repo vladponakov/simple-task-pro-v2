@@ -22,7 +22,7 @@ npm run dev
 Open http://localhost:5173
 
 ## Auth (demo)
-Send header `X-User` with: `anna` (Admin), `ulf` (User 1), `una` (User 2).
+Send header `X-User` with: `paddy` (Admin), `ulf` (User 1), `una` (User 2).
 
 
 ---
@@ -43,7 +43,7 @@ const FLAGS = { dnd: true, bulk: true, filters: true, modernTheme: true }
 
 ## Google OAuth (optional, for real login + 2FA)
 This demo ships with a **Login screen** supporting:
-- **Demo login** (header `X-User`): Anna/Ulf/Una — no backend change.
+- **Demo login** (header `X-User`): paddy/Ulf/Una — no backend change.
 - **Google Sign-In placeholder**: Enable real Google login by wiring OAuth to FastAPI.
 
 Recommended approach:
