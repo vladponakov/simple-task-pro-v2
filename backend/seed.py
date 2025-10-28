@@ -104,12 +104,12 @@ def seed():
     _log_db_target("SEED")
     with SessionLocal() as db:  # auto-close, rollback on exception
         # ===== Users =====
-        anna = User(name="Anna Admin", role=Role.ADMIN)   # Admin
+        paddy = User(name="Paddy MacGrath Admin", role=Role.ADMIN)   # Admin
         ulf  = User(name="Ulf",        role=Role.USER)    # User 1
         una  = User(name="Una",        role=Role.USER)    # User 2
         liam = User(name="Liam",       role=Role.USER)    # User 3
-        db.add_all([anna, ulf, una, liam]); db.commit()
-        db.refresh(anna); db.refresh(ulf); db.refresh(una); db.refresh(liam)
+        db.add_all([paddy, ulf, una, liam]); db.commit()
+        db.refresh(paddy); db.refresh(ulf); db.refresh(una); db.refresh(liam)
 
         # ===== Students (London addresses) =====
         s1 = Student(name="Oliver Smith",  student_class="10B", address="221B Baker St, London")
@@ -144,54 +144,54 @@ def seed():
         t1 = Task(student_id=s1.id, title="Home visit: Oliver Smith",
                   body="Verify homework plan; discuss recent absence.",
                   address=s1.address, checklist=[{"text":"Knock the door","done":False},{"text":"Check absence notes","done":False}],
-                  due_at=due(10), status=TaskStatus.ASSIGNED, assignee_user_id=ulf.id, created_by=anna.id)
+                  due_at=due(10), status=TaskStatus.ASSIGNED, assignee_user_id=ulf.id, created_by=paddy.id)
 
         t2 = Task(student_id=s2.id, title="Phone call: Amelia Johnson",
                   body="Follow up on tardiness.", address=s2.address,
                   checklist=[{"text":"Call guardian","done":False}], due_at=due(11),
-                  status=TaskStatus.ASSIGNED, assignee_user_id=ulf.id, created_by=anna.id)
+                  status=TaskStatus.ASSIGNED, assignee_user_id=ulf.id, created_by=paddy.id)
 
         t3_done = Task(student_id=s1.id, title="Earlier visit: Oliver Smith",
                   body="Weekly check", address=s1.address, checklist=[],
-                  due_at=NOW - timedelta(days=2), status=TaskStatus.DONE, assignee_user_id=ulf.id, created_by=anna.id)
+                  due_at=NOW - timedelta(days=2), status=TaskStatus.DONE, assignee_user_id=ulf.id, created_by=paddy.id)
 
         t_rej = Task(student_id=s8.id, title="Welfare check: Sophie Taylor",
                   body="Confirm attendance tomorrow.", address=s8.address, checklist=[],
-                  due_at=due(14), status=TaskStatus.REJECTED, assignee_user_id=ulf.id, created_by=anna.id)
+                  due_at=due(14), status=TaskStatus.REJECTED, assignee_user_id=ulf.id, created_by=paddy.id)
 
         # --- User 2 (Una)
         t4 = Task(student_id=s3.id, title="Home visit: Jack Williams",
                   body="Collect consent form.", address=s3.address,
                   checklist=[{"text":"Bring consent pack","done":False}], due_at=due(10),
-                  status=TaskStatus.ASSIGNED, assignee_user_id=una.id, created_by=anna.id)
+                  status=TaskStatus.ASSIGNED, assignee_user_id=una.id, created_by=paddy.id)
 
         t5 = Task(student_id=s4.id, title="Parent meeting: Isla Brown",
                   body="Behaviour plan discussion.", address=s4.address,
-                  checklist=[], due_at=due(12), status=TaskStatus.ASSIGNED, assignee_user_id=una.id, created_by=anna.id)
+                  checklist=[], due_at=due(12), status=TaskStatus.ASSIGNED, assignee_user_id=una.id, created_by=paddy.id)
 
         t6 = Task(student_id=s5.id, title="Welfare check: Harry Jones",
                   body="Follow up after absence.", address=s5.address,
-                  checklist=[], due_at=due(13), status=TaskStatus.ASSIGNED, assignee_user_id=una.id, created_by=anna.id)
+                  checklist=[], due_at=due(13), status=TaskStatus.ASSIGNED, assignee_user_id=una.id, created_by=paddy.id)
 
         # --- New queue items (unassigned)
         t_new1 = Task(student_id=s6.id, title="New: Emily Davis",
                   body="Create visit plan.", address=s6.address, checklist=[{"text":"Draft plan","done":False}],
-                  due_at=due(15), status=TaskStatus.NEW, assignee_user_id=None, created_by=anna.id)
+                  due_at=due(15), status=TaskStatus.NEW, assignee_user_id=None, created_by=paddy.id)
 
         t_new2 = Task(student_id=s7.id, title="New: George Miller",
                   body="Initial contact.", address=s7.address, checklist=[],
-                  due_at=due(16), status=TaskStatus.NEW, assignee_user_id=None, created_by=anna.id)
+                  due_at=due(16), status=TaskStatus.NEW, assignee_user_id=None, created_by=paddy.id)
 
         # --- Accepted example
         t_acc = Task(student_id=s9.id, title="Check-in: Noah Wilson",
                   body="Short progress check.", address=s9.address, checklist=[],
-                  due_at=due(9), status=TaskStatus.ACCEPTED, assignee_user_id=una.id, created_by=anna.id)
+                  due_at=due(9), status=TaskStatus.ACCEPTED, assignee_user_id=una.id, created_by=paddy.id)
 
         db.add_all([t1,t2,t3_done,t_rej,t4,t5,t6,t_new1,t_new2,t_acc]); db.commit()
 
         # ===== Audit trail =====
         for t in [t1,t2,t4,t5,t6,t_acc]:
-            log_event(db, t, anna, TaskEventType.ASSIGN, {"to": t.assignee_user_id})
+            log_event(db, t, paddy, TaskEventType.ASSIGN, {"to": t.assignee_user_id})
         log_event(db, t3_done, ulf, TaskEventType.COMPLETE, {"at": (NOW - timedelta(days=2, hours=-1)).isoformat()})
         log_event(db, t_rej, ulf, TaskEventType.REJECT, {"reason": "Student ill today"})
 

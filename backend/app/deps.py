@@ -4,7 +4,7 @@ from .db import get_db
 from .models import User, Role
 
 HEADER_TO_USER = {
-    "anna": {"name": "Anna Admin", "role": Role.ADMIN},
+    "paddy": {"name": "paddy Admin", "role": Role.ADMIN},
     "ulf": {"name": "Ulf", "role": Role.USER},
     "una": {"name": "Una", "role": Role.USER},
 }
