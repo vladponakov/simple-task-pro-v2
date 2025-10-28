@@ -14,7 +14,16 @@ const API = (path, opts = {}) =>
     },
     ...opts,
   }).then(async (r) => {
-    if (!r.ok) throw new Error((await r.text()) || r.statusText);
+    if (!r.ok) {
+      let msg = r.statusText;
+      try {
+        const j = await r.json();
+        if (j?.detail) msg = j.detail;
+      } catch {
+        msg = await r.text();
+      }
+      throw new Error(msg || "Request failed");
+    }
     return r.json();
   });
 
@@ -48,15 +57,23 @@ const dNO = (iso) =>
       })
     : "-";
 
+// Robust ISO-konvertering (tillater "YYYY-MM-DD HH:MM" og "YYYY-MM-DDTHH:MM")
 const toIso = (v) => {
   if (!v) return null;
-  const d = typeof v === "string" ? new Date(v) : v;
+  const s = typeof v === "string" ? v.replace(" ", "T") : v;
+  const d = new Date(s);
   return isNaN(d) ? null : d.toISOString();
 };
 
 const todayAt = (hh = 10, mm = 0) => {
   const d = new Date();
   d.setHours(hh, mm, 0, 0);
+  return d.toISOString();
+};
+
+// Stabil default: 01/11/2025 15:00 (lokal) → ISO (UTC)
+const defaultDueAt = () => {
+  const d = new Date("2025-11-01T15:00:00");
   return d.toISOString();
 };
 
@@ -230,7 +247,9 @@ function TaskComments({ taskId }) {
       .then(setComments)
       .catch(() => setComments([]));
 
-  useEffect(load, [taskId]);
+   useEffect(() => {
+    load();
+    }, [taskId]);
 
   const add = async () => {
     const val = text.trim();
@@ -317,7 +336,7 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
           title: title.trim(),
           address: address.trim() || null,
           body: null,
-          due_at: todayAt(10, 0), // auto today 10:00
+          due_at: defaultDueAt(),              // <-- stabil default
           assignee_user_id: defaultAssigneeId, // default → Ulf
           status: "Assigned",
           reason: reason || null,
@@ -364,7 +383,7 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
         <textarea className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
 
         <div className="meta" style={{ marginTop: 8, opacity: 0.8 }}>
-          Due: today 10:00 (set automatically)
+          Due: 01/11/2025 15:00 (set automatically)
         </div>
 
         <div className="btns" style={{ marginTop: 12 }}>
@@ -384,7 +403,7 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
 function EditModal({ task, onClose, onSaved, isAdmin }) {
   const [title, setTitle] = useState(task.title);
   const [address, setAddress] = useState(task.address || "");
-  const [dueAt, setDueAt] = useState(task.due_at || "");
+  const [dueAt, setDueAt] = useState(task.due_at || defaultDueAt()); // stabil default hvis tom
   const [reason, setReason] = useState(task.reason || "");
   const [assignee, setAssignee] = useState(task.assignee_user_id || 2);
 
@@ -425,20 +444,22 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
     setChecklist(copy);
   };
 
-  const payloadBase = {
-    title,
-    address: address || null,
-    due_at: toIso(dueAt) || null,
-    reason: reason || null,
-    checklist,
-  };
+ const payloadBase = {
+  title,
+  address: address || null,
+  due_at: toIso(dueAt) || null,
+  reason: reason || null,
+  checklist,
+  assignee_user_id: isAdmin ? Number(assignee) : task.assignee_user_id ?? null,
+};
+
 
   const save = async () => {
     setSaving(true);
     setErr("");
     try {
       await API(`/api/tasks/${task.id}`, {
-        method: "PUT",
+        method: "PATCH",                           // <-- PATCH
         body: JSON.stringify(payloadBase),
       });
       await onSaved();
@@ -456,11 +477,10 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
     setErr("");
     try {
       await API(`/api/tasks/${task.id}`, {
-        method: "PUT",
+        method: "PATCH",
         body: JSON.stringify({
           ...payloadBase,
           due_at: todayAt(10, 0),
-          status: "Assigned",
         }),
       });
       await API(`/api/tasks/${task.id}/assign`, {
@@ -477,7 +497,7 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop">{/* Ikke lukk ved backdrop-click */}
       <div
         className="modal"
         onClick={(e) => e.stopPropagation()} // don't close when clicking inside
@@ -581,7 +601,6 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
     </div>
   );
 }
-
 
 /* ---------------- Hooks ---------------- */
 function useTasks() {
@@ -1010,7 +1029,7 @@ function RouteTab({ tasksForMeToday }) {
           Open Smart Route
         </button>
       </div>
-      <div style={{ opacity: 0.8, marginBottom: 10 }}>
+      <div className="row" style={{ opacity: 0.8, marginBottom: 10 }}>
         Estimate ~ {minutes(est.totalMinutes)} min (incl. travel).
       </div>
       {sorted.map((t) => (
