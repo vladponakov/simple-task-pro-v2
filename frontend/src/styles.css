@@ -202,3 +202,5 @@ body{
   .modal { width: 96vw; max-height: 92vh; overflow-y: auto; }
   .filterbar { flex-wrap: wrap; gap: 8px; }
 }
+
+.subbar{ display:flex; align-items:center; gap:8px; margin:6px; opacity:.9 }

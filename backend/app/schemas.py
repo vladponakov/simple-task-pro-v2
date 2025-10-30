@@ -73,6 +73,7 @@ class TaskOut(TaskIn):
     status: TaskStatus
     created_by: Optional[int] = None
     updated_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     class Config:
         from_attributes = True

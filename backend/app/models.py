@@ -79,6 +79,7 @@ class Task(Base):
     checklist = Column(MutableList.as_mutable(JSON), nullable=True, default=list)
 
     due_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
     status = Column(SAEnum(TaskStatus), default=TaskStatus.NEW, nullable=False)
 
     assignee_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)

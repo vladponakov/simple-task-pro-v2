@@ -102,7 +102,6 @@ const USERS = [
   { id: 1, name: "Paddy MacGrath (Admin)" },
   { id: 2, name: "Ulf (User 1)" },
   { id: 3, name: "Una (User 2)" },
-  { id: 4, name: "Liam (User 3)" },
 ];
 
 /* ---------------- Auth / Login ---------------- */
@@ -111,16 +110,15 @@ function Login({ onDemoLogin, onGoogleLogin }) {
     { id: "paddy", label: "Admin (paddy)" },
     { id: "ulf", label: "User 1 (Ulf)" },
     { id: "una", label: "User 2 (Una)" },
-    { id: "liam", label: "User 3 (Liam)" },
   ];
-  const DEMO_PW = { paddy: "admin123", ulf: "user1", una: "user2", liam: "user3" };
+  const DEMO_PW = { paddy: "admin123", ulf: "user1", una: "user2"};
 
   const [who, setWho] = useState("paddy");
   const [pw, setPw] = useState("");
 
   const login = () => {
     if ((DEMO_PW[who] || "") !== pw.trim()) {
-      alert("Wrong password. Demo → paddy:admin123, ulf:user1, una:user2, liam:user3");
+      alert("Wrong password. Demo → paddy:admin123, ulf:user1, una:user2");
       return;
     }
     onDemoLogin(who);
@@ -169,7 +167,7 @@ function Login({ onDemoLogin, onGoogleLogin }) {
         </button>
 
         <div className="sub" style={{ marginTop: 10, fontSize: 12 }}>
-          Demo creds → paddy:admin123, ulf:user1, una:user2, liam:user3
+          Demo creds → paddy:admin123, ulf:user1, una:user2
         </div>
       </div>
     </div>
@@ -203,7 +201,6 @@ function Header({ compact, setCompact, onOpenSmartRoute, todaysCount, onCreate }
             <option value="paddy">Paddy MacGrath (Admin)</option>
             <option value="ulf">Ulf (User 1)</option>
             <option value="una">Una (User 2)</option>
-            <option value="liam">Liam (User 3)</option>
           </select>
         </label>
       )}
@@ -247,9 +244,9 @@ function TaskComments({ taskId }) {
       .then(setComments)
       .catch(() => setComments([]));
 
-   useEffect(() => {
+  useEffect(() => {
     load();
-    }, [taskId]);
+  }, [taskId]);
 
   const add = async () => {
     const val = text.trim();
@@ -336,8 +333,8 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
           title: title.trim(),
           address: address.trim() || null,
           body: null,
-          due_at: defaultDueAt(),              // <-- stabil default
-          assignee_user_id: defaultAssigneeId, // default → Ulf
+          due_at: defaultDueAt(),
+          assignee_user_id: defaultAssigneeId,
           status: "Assigned",
           reason: reason || null,
           checklist: [],
@@ -403,7 +400,7 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
 function EditModal({ task, onClose, onSaved, isAdmin }) {
   const [title, setTitle] = useState(task.title);
   const [address, setAddress] = useState(task.address || "");
-  const [dueAt, setDueAt] = useState(task.due_at || defaultDueAt()); // stabil default hvis tom
+  const [dueAt, setDueAt] = useState(task.due_at || defaultDueAt());
   const [reason, setReason] = useState(task.reason || "");
   const [assignee, setAssignee] = useState(task.assignee_user_id || 2);
 
@@ -444,26 +441,28 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
     setChecklist(copy);
   };
 
- const payloadBase = {
-  title,
-  address: address || null,
-  due_at: toIso(dueAt) || null,
-  reason: reason || null,
-  checklist,
-  assignee_user_id: isAdmin ? Number(assignee) : task.assignee_user_id ?? null,
-};
-
+  const payloadBase = {
+    title,
+    address: address || null,
+    due_at: toIso(dueAt) || null,
+    reason: reason || null,
+    checklist,
+  };
+  // Send kun assignee_user_id dersom admin
+  if (isAdmin) {
+    payloadBase.assignee_user_id = Number(assignee);
+  }
 
   const save = async () => {
     setSaving(true);
     setErr("");
     try {
       await API(`/api/tasks/${task.id}`, {
-        method: "PATCH",                           // <-- PATCH
+        method: "PATCH",
         body: JSON.stringify(payloadBase),
       });
       await onSaved();
-      onClose(); // ✅ close after save
+      onClose();
     } catch (e) {
       setErr(e?.message || "Failed to save");
     } finally {
@@ -488,7 +487,7 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
         body: JSON.stringify({ assignee_user_id: Number(assignee) }),
       });
       await onSaved();
-      onClose(); // ✅ close after save & assign
+      onClose();
     } catch (e) {
       setErr(e?.message || "Failed to save & assign");
     } finally {
@@ -644,7 +643,6 @@ function FilterBar({ setQuery, setStatus, setUser, bulkMode, setBulkMode }) {
             <option value="">All users</option>
             <option value="2">User 1 (Ulf)</option>
             <option value="3">User 2 (Una)</option>
-            <option value="4">User 3 (Liam)</option>
             <option value="none">Unassigned</option>
           </select>
         </>
@@ -900,9 +898,6 @@ function BulkBar({ selection, reload }) {
       <button className="btn" onClick={() => bulkAssign(3)}>
         Assign to Una
       </button>
-      <button className="btn" onClick={() => bulkAssign(4)}>
-        Assign to Liam
-      </button>
       <button className="btn btn-primary" onClick={bulkComplete}>
         Mark Complete
       </button>
@@ -920,6 +915,9 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId, onCreate }) {
   const [user, setUser] = useState("");
   const [bulkMode, setBulkMode] = useState(false);
   const [selection, setSelection] = useState(new Set());
+  const [sortBy, setSortBy] = useState("due_at");
+  const [sortOrder, setSortOrder] = useState("asc");
+  const [whenFilter, setWhenFilter] = useState("all"); // 'all' | 'today' | 'later'
 
   const toggleSelect = (id) => {
     const s = new Set(selection);
@@ -928,18 +926,38 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId, onCreate }) {
   };
 
   const filtered = useMemo(() => {
-    return tasks.filter((t) => {
-      if (query && !`${t.title}|${t.address || ""}`.toLowerCase().includes(query))
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const isToday = (iso) => iso && iso.slice(0, 10) === todayStr;
+    const isLater = (iso) => iso && iso.slice(0, 10) > todayStr;
+
+    const base = tasks.filter((t) => {
+      if (query && !(`${t.title}|${t.address || ""}`.toLowerCase().includes(query)))
         return false;
+
       if (status && t.status !== status) return false;
+
       if (user) {
         if (user === "none" && t.assignee_user_id != null) return false;
-        if (user !== "none" && String(t.assignee_user_id) !== String(user))
-          return false;
+        if (user !== "none" && String(t.assignee_user_id) !== String(user)) return false;
       }
+
+      if (whenFilter === "today" && !(t.due_at && isToday(t.due_at))) return false;
+      if (whenFilter === "later" && !(t.due_at && isLater(t.due_at))) return false;
+
       return true;
     });
-  }, [tasks, query, status, user]);
+
+    const pick = (t) =>
+      (sortBy === "updated_at" ? t.updated_at :
+       sortBy === "completed_at" ? t.completed_at :
+       t.due_at) || "";
+
+    return base.slice().sort((a, b) => {
+      const av = pick(a), bv = pick(b);
+      if (av === bv) return 0;
+      return (av > bv ? 1 : -1) * (sortOrder === "desc" ? -1 : 1);
+    });
+  }, [tasks, query, status, user, whenFilter, sortBy, sortOrder]);
 
   const assignTo = (uid) => async (taskId) =>
     API(`/api/tasks/${taskId}/assign`, {
@@ -978,6 +996,28 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId, onCreate }) {
         bulkMode={bulkMode}
         setBulkMode={setBulkMode}
       />
+      <div className="subbar">
+        <label>Sort by:&nbsp;
+          <select className="select-sm" value={sortBy} onChange={(e)=>setSortBy(e.target.value)}>
+            <option value="due_at">Due date</option>
+            <option value="updated_at">Updated</option>
+            <option value="completed_at">Completed</option>
+          </select>
+        </label>
+        <label style={{ marginLeft: 8 }}>Order:&nbsp;
+          <select className="select-sm" value={sortOrder} onChange={(e)=>setSortOrder(e.target.value)}>
+            <option value="asc">Asc</option>
+            <option value="desc">Desc</option>
+          </select>
+        </label>
+        <label style={{ marginLeft: 8 }}>When:&nbsp;
+          <select className="select-sm" value={whenFilter} onChange={(e)=>setWhenFilter(e.target.value)}>
+            <option value="all">All</option>
+            <option value="today">Today</option>
+            <option value="later">Later</option>
+          </select>
+        </label>
+      </div>
 
       {/* New Task button - Admin only */}
       {isAdmin && (
@@ -994,7 +1034,6 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId, onCreate }) {
             {col("New", (t) => t.status === "New", null)}
             {col("User 1", (t) => t.assignee_user_id === 2 && t.status !== "Done", assignTo(2))}
             {col("User 2", (t) => t.assignee_user_id === 3 && t.status !== "Done", assignTo(3))}
-            {col("User 3", (t) => t.assignee_user_id === 4 && t.status !== "Done", assignTo(4))}
             {col("Done", (t) => t.status === "Done", markDone)}
           </>
         ) : (
@@ -1087,7 +1126,7 @@ function App() {
   if (!authed) return <Login onDemoLogin={onDemoLogin} onGoogleLogin={onGoogleLogin} />;
 
   const role = localStorage.getItem("user") || "paddy";
-  const meId = role === "ulf" ? 2 : role === "una" ? 3 : role === "liam" ? 4 : 1;
+  const meId = role === "ulf" ? 2 : role === "una" ? 3 : 1;
   const isAdmin = role === "paddy";
 
   const todayISO = new Date().toISOString().slice(0, 10);
