@@ -14,7 +14,7 @@ from app.config import settings
 from app.models import (
     Task, TaskStatus, TaskEventType, User, Student, Absence, Role, Comment
 )
-from app.schemas import (
+from app.schemas import (UserOut, 
     TaskIn, TaskOut, TaskEdit, AssignIn, StatusIn, TaskEventOut,
     AbsenceIn, AbsenceOut, StudentIn, StudentOut, HistoryItem, UserOut,
     CommentCreate, CommentOut
@@ -72,13 +72,11 @@ def list_comments(task_id: int, db: Session = Depends(get_db)):
     return items
 
 @app.post("/api/tasks/{task_id}/comments", response_model=CommentOut)
-def add_comment(task_id: int, body: CommentCreate, db: Session = Depends(get_db)):
+def add_comment(task_id: int, body: CommentCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-
-    # TODO: Hent ekte forfatter (fra token/headers). Midlertidig fallback:
-    author = "paddy"
+    author = user.name
     c = Comment(task_id=task_id, author=author, text=body.text.strip())
     db.add(c)
     db.commit()
@@ -124,7 +122,7 @@ def student_history(student_id: int, days: int = 90, db: Session = Depends(get_d
     for t in visits:
         items.append(HistoryItem(
             kind="visit",
-            date=t.due_at or datetime.utcnow(),
+            date=(t.completed_at or t.due_at or datetime.utcnow()),
             title=t.title
         ))
 
@@ -159,13 +157,25 @@ def create_task(data: TaskIn, db: Session = Depends(get_db), user: User = Depend
     return t
 
 @app.get("/api/tasks", response_model=List[TaskOut])
-def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_user), status: Optional[TaskStatus] = None):
+def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_user), status: Optional[TaskStatus] = None, scope: Optional[str] = None, sort: Optional[str] = None, order: Optional[str] = None):
     q = db.query(Task).filter(Task.deleted_at.is_(None))
     if status:
         q = q.filter(Task.status == status)
-    if user.role != Role.ADMIN:
+    # Scope: admins can request 'all' (default); users default to 'my'
+    if user.role != Role.ADMIN or scope == 'my':
         q = q.filter((Task.assignee_user_id == user.id) | (Task.created_by == user.id))
-    return q.order_by(Task.due_at.is_(None), Task.due_at).all()
+    # Sorting
+    sort = (sort or 'due_at').lower()
+    order = (order or 'asc').lower()
+    allowed = {'due_at','updated_at','completed_at'}
+    if sort not in allowed:
+        sort = 'due_at'
+    col = getattr(Task, sort)
+    if order == 'desc':
+        q = q.order_by(col.is_(None), col.desc())
+    else:
+        q = q.order_by(col.is_(None), col.asc())
+    return q.all()
 
 @app.get("/api/tasks/{task_id}", response_model=TaskOut)
 def get_task(task_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -177,14 +187,23 @@ def get_task(task_id: int, db: Session = Depends(get_db), user: User = Depends(g
     return t
 
 # Viktig: bare ÉN PATCH /api/tasks/{task_id} (unngå konflikt)
-@app.patch("/api/tasks/{task_id}", response_model=TaskOut, dependencies=[Depends(require_admin)])
+@app.patch("/api/tasks/{task_id}", response_model=TaskOut)
 def edit_task(task_id: int, data: TaskEdit, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     t = db.query(Task).filter(Task.id == task_id, Task.deleted_at.is_(None)).first()
     if not t:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    # Role-aware whitelist: Admin may edit all; Assignee may edit safe fields only
+    payload = data.model_dump(exclude_unset=True)
+    if user.role != Role.ADMIN:
+        if t.assignee_user_id != user.id and t.created_by != user.id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        allowed = {"checklist", "address", "reason", "due_at", "title", "body"}
+        disallowed = set(payload.keys()) - allowed
+        if disallowed:
+            raise HTTPException(status_code=403, detail=f"Fields not allowed for user: {sorted(disallowed)}")
     changed = {}
-    for k, v in data.model_dump(exclude_unset=True).items():
+    for k, v in payload.items():
         setattr(t, k, v)
         changed[k] = v
 
@@ -246,6 +265,7 @@ def change_status(task_id: int, data: StatusIn, db: Session = Depends(get_db), u
         log_event(db, t, user, TaskEventType.REJECT, {"reason": data.reason, "at": now_iso})
     elif action == "complete":
         t.status = TaskStatus.DONE
+        t.completed_at = datetime.utcnow()
         log_event(db, t, user, TaskEventType.COMPLETE, {"at": now_iso})
     else:
         raise HTTPException(status_code=400, detail="Invalid action")

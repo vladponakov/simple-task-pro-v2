@@ -107,9 +107,8 @@ def seed():
         paddy = User(name="Paddy MacGrath Admin", role=Role.ADMIN)   # Admin
         ulf  = User(name="Ulf",        role=Role.USER)    # User 1
         una  = User(name="Una",        role=Role.USER)    # User 2
-        liam = User(name="Liam",       role=Role.USER)    # User 3
-        db.add_all([paddy, ulf, una, liam]); db.commit()
-        db.refresh(paddy); db.refresh(ulf); db.refresh(una); db.refresh(liam)
+        db.add_all([paddy, ulf, una]); db.commit()
+        db.refresh(paddy); db.refresh(ulf); db.refresh(una);
 
         # ===== Students (London addresses) =====
         s1 = Student(name="Oliver Smith",  student_class="10B", address="221B Baker St, London")
