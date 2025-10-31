@@ -1,49 +1,57 @@
-from __future__ import annotations
-
-from datetime import datetime, timedelta
-from typing import List, Optional
-
+# --- imports (utdrag) ---
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Optional
+from datetime import datetime, timedelta
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-# Bruk KONSISTENTE imports (velg app.* eller relative - her bruker vi app.*)
-from app.db import Base, engine, get_db
 from app.config import settings
-from app.models import (
-    Task, TaskStatus, TaskEventType, User, Student, Absence, Role, Comment
-)
-from app.schemas import (UserOut, 
-    TaskIn, TaskOut, TaskEdit, AssignIn, StatusIn, TaskEventOut,
-    AbsenceIn, AbsenceOut, StudentIn, StudentOut, HistoryItem, UserOut,
+from app.db import Base, engine, get_db
+from app.models import Task, TaskStatus, TaskEventType, User, Student, Absence, Role, Comment
+from app.schemas import (
+    UserOut, TaskIn, TaskOut, TaskEdit, AssignIn, StatusIn, TaskEventOut,
+    AbsenceIn, AbsenceOut, StudentIn, StudentOut, HistoryItem,
     CommentCreate, CommentOut
 )
-from app.deps import get_current_user, require_admin
+from app.deps import get_current_user, require_admin, require_api_token, get_admin_user
 from app.utils import log_event, soft_delete, restore
 
-# --- App + CORS --------------------------------------------------------------
-
-# Håndter at CORS_ORIGINS kan være enten liste eller komma-separert streng
-if isinstance(settings.CORS_ORIGINS, str):
-    _origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
-else:
-    _origins = settings.CORS_ORIGINS
-
+# ---------------- App + CORS (MÅ komme før route-dekoratører) ----------------
 app = FastAPI(title="Simple Task Pro API v2")
 
+# Tillat lokalt UI
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,          # OK even if you don't use cookies
-    allow_methods=["*"],             # includes PATCH, POST, DELETE, OPTIONS
-    allow_headers=["*"],             # includes custom "X-User" header
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*", "X-User"],
 )
 
-# Valgfritt: flytt table-creation til startup i stedet for import-tid
+# Opprett tabeller ved oppstart (idempotent)
 @app.on_event("startup")
-def on_startup():
+def _on_startup():
     Base.metadata.create_all(bind=engine)
+
+# --- Ingest (token/bypass) ---------------------------------------------------
+@app.post("/api/ingest/task", response_model=TaskOut, dependencies=[Depends(require_api_token)])
+def ingest_task(payload: TaskIn, db: Session = Depends(get_db), actor: User = Depends(get_admin_user)):
+    t = Task(**payload.model_dump(), status=TaskStatus.NEW, created_by=actor.id)
+    db.add(t); db.commit(); db.refresh(t)
+    log_event(db, t, actor, TaskEventType.EDIT, {"create": True, "source": "api-token"})
+    return t
+
+@app.post("/api/ingest/tasks", response_model=List[TaskOut], dependencies=[Depends(require_api_token)])
+def ingest_tasks(payload: List[TaskIn], db: Session = Depends(get_db), actor: User = Depends(get_admin_user)):
+    out = []
+    for item in payload:
+        t = Task(**item.model_dump(), status=TaskStatus.NEW, created_by=actor.id)
+        db.add(t); out.append(t)
+    db.commit()
+    for t in out:
+        log_event(db, t, actor, TaskEventType.EDIT, {"create": True, "source": "api-token"})
+    return out
 
 # --- Health / Me -------------------------------------------------------------
 

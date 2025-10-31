@@ -7,7 +7,7 @@ const FLAGS = { dnd: true, bulk: true, filters: true, modernTheme: true };
 
 /* ---------------- API helper ---------------- */
 const API = (path, opts = {}) =>
-  fetch(`http://localhost:8000${path}`, {
+  fetch(path, {  // same-origin på Render
     headers: {
       "X-User": localStorage.getItem("user") || "paddy",
       "Content-Type": "application/json",
@@ -880,7 +880,7 @@ function BulkBar({ selection, reload }) {
     if (!confirm("Delete selected tasks?")) return;
     await Promise.all(
       ids.map((id) =>
-        fetch(`http://localhost:8000/api/tasks/${id}`, {
+        fetch(`/api/tasks/${id}`, {
           method: "DELETE",
           headers: { "X-User": localStorage.getItem("user") || "paddy" },
         })
