@@ -1,10 +1,14 @@
-# --- imports (utdrag) ---
-from fastapi import FastAPI, Depends, HTTPException
+# --- imports (excerpt) ---
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from datetime import datetime, timedelta
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+import os
+
+from starlette.staticfiles import StaticFiles
+from starlette.responses import FileResponse
 
 from app.config import settings
 from app.db import Base, engine, get_db
@@ -17,13 +21,41 @@ from app.schemas import (
 from app.deps import get_current_user, require_admin, require_api_token, get_admin_user
 from app.utils import log_event, soft_delete, restore
 
-# ---------------- App + CORS (MÅ komme før route-dekoratører) ----------------
-app = FastAPI(title="Simple Task Pro API v2")
+app = FastAPI()
+
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(static_dir):
+    app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="assets")
+
+    @app.get("/")
+    def index():
+        return FileResponse(os.path.join(static_dir, "index.html"))
+
+# CORS only needed if frontend is on a different origin
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "https://<your-static-site>.onrender.com"],
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*", "X-User"],
+# )
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str, request: Request):
+    if full_path.startswith(("api/", "docs", "redoc", "openapi.json", "assets/")):
+        raise HTTPException(status_code=404)
+    if os.path.isdir(static_dir):
+        return FileResponse(os.path.join(static_dir, "index.html"))
+    raise HTTPException(status_code=404)
 
 # Tillat lokalt UI
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173","https://demo-taskpro.onrender.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*", "X-User"],
