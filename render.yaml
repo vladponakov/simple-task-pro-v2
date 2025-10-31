@@ -6,23 +6,19 @@ services:
     plan: starter
 
     buildCommand: |
-      pip install -r ../requirements.txt
+      pip install -r requirements.txt
 
     preDeployCommand: |
       mkdir -p /data/tasks_feed
-      # lag CSV med header hvis den ikke finnes
       test -f /data/tasks_feed/tasks.csv || echo "student_id,title,address,due_at,assignee_user_id,status,reason" > /data/tasks_feed/tasks.csv
-      # seed testdata i /data/app.db
       python seed.py --reset
 
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-
     envVars:
       - key: DATABASE_URL
         value: sqlite:////data/app.db
       - key: REQUIRE_API_TOKEN
-        value: "false"   # sett "true" + API_TOKENS hvis du vil låse ingest
-
+        value: "false"
     disk:
       name: data-disk
       mountPath: /data
