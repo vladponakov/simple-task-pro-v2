@@ -44,14 +44,6 @@ if os.path.isdir(static_dir):
 def healthz():
     return {"ok": True}
 
-@app.get("/{full_path:path}")
-def spa_fallback(full_path: str, request: Request):
-    if full_path.startswith(("api/", "docs", "redoc", "openapi.json", "assets/")):
-        raise HTTPException(status_code=404)
-    if os.path.isdir(static_dir):
-        return FileResponse(os.path.join(static_dir, "index.html"))
-    raise HTTPException(status_code=404)
-
 # Tillat lokalt UI
 app.add_middleware(
     CORSMiddleware,
@@ -315,6 +307,7 @@ def change_status(task_id: int, data: StatusIn, db: Session = Depends(get_db), u
     db.refresh(t)
     return t
 
+# --- API route stays together and RETURNS before the fallback ---
 @app.get("/api/tasks/{task_id}/events", response_model=List[TaskEventOut])
 def task_events(task_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     t = db.query(Task).filter(Task.id == task_id).first()
@@ -332,3 +325,19 @@ def task_events(task_id: int, db: Session = Depends(get_db), user: User = Depend
     ).mappings().all()
 
     return [TaskEventOut(**dict(r)) for r in rows]
+
+
+# --- keep these AT THE VERY END of main.py ---
+from fastapi import Response
+
+@app.head("/")
+def head_root():
+    return Response(status_code=200)
+
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str, request: Request):
+    if full_path.startswith(("api/", "docs", "redoc", "openapi.json", "assets/")):
+        raise HTTPException(status_code=404)
+    if os.path.isdir(static_dir):
+        return FileResponse(os.path.join(static_dir, "index.html"))
+    raise HTTPException(status_code=404)
