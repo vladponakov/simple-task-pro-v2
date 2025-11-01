@@ -18,7 +18,7 @@ services:
     preDeployCommand: |
       mkdir -p /data/tasks_feed
       test -f /data/tasks_feed/tasks.csv || echo "student_id,title,address,due_at,assignee_user_id,status,reason" > /data/tasks_feed/tasks.csv
-      python seed.py --reset
+      python app/seed.py --reset
 
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
