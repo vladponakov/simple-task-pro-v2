@@ -20,6 +20,14 @@ from app.schemas import (
 )
 from app.deps import get_current_user, require_admin, require_api_token, get_admin_user
 from app.utils import log_event, soft_delete, restore
+from starlette.responses import Response
+
+@app.middleware("http")
+async def no_cache_index(request, call_next):
+    resp: Response = await call_next(request)
+    if request.url.path in ("/", "/index.html"):
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 app = FastAPI()
 
