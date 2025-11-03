@@ -2,32 +2,31 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
-/* ---------------- Feature flags ---------------- */
-const FLAGS = { dnd: true, bulk: true, filters: true, modernTheme: true };
-
-/* ---------------- API helper ---------------- */
+/* ------------------------------------------------------------------ */
+/* API                                                                */
+/* ------------------------------------------------------------------ */
 const API = (path, opts = {}) =>
   fetch(`http://localhost:8000${path}`, {
     headers: {
       "X-User": localStorage.getItem("user") || "paddy",
       "Content-Type": "application/json",
     },
+    cache: "no-store",
     ...opts,
   }).then(async (r) => {
     if (!r.ok) {
-      let msg = r.statusText;
       try {
         const j = await r.json();
-        if (j?.detail) msg = j.detail;
-      } catch {
-        msg = await r.text();
-      }
-      throw new Error(msg || "Request failed");
+        if (j?.detail) throw new Error(j.detail);
+      } catch {}
+      throw new Error((await r.text()) || "Request failed");
     }
     return r.json();
   });
 
-/* ---------------- Helpers ---------------- */
+/* ------------------------------------------------------------------ */
+/* Utils                                                              */
+/* ------------------------------------------------------------------ */
 const onlyDateStr = (d) => {
   try {
     const dt = new Date(d);
@@ -48,16 +47,6 @@ const fmtNO = (iso) =>
       })
     : "-";
 
-const dNO = (iso) =>
-  iso
-    ? new Date(iso).toLocaleDateString("no-NO", {
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric",
-      })
-    : "-";
-
-// Robust ISO-konvertering (tillater "YYYY-MM-DD HH:MM" og "YYYY-MM-DDTHH:MM")
 const toIso = (v) => {
   if (!v) return null;
   const s = typeof v === "string" ? v.replace(" ", "T") : v;
@@ -65,17 +54,7 @@ const toIso = (v) => {
   return isNaN(d) ? null : d.toISOString();
 };
 
-const todayAt = (hh = 10, mm = 0) => {
-  const d = new Date();
-  d.setHours(hh, mm, 0, 0);
-  return d.toISOString();
-};
-
-// Stabil default: 01/11/2025 15:00 (lokal) → ISO (UTC)
-const defaultDueAt = () => {
-  const d = new Date("2025-11-01T15:00:00");
-  return d.toISOString();
-};
+const defaultDueAt = () => new Date().toISOString();
 
 function buildSmartRouteUrl(addresses) {
   if (!addresses || addresses.length === 0) return null;
@@ -90,13 +69,23 @@ function buildSmartRouteUrl(addresses) {
   return `https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${dest}&waypoints=${waypoints}`;
 }
 
-const minutes = (n) => Math.round(n);
-function estimateDurations(stops) {
-  const perStop = 15;
-  const perHop = 12;
-  const total = stops.length * perStop + Math.max(0, stops.length - 1) * perHop;
-  return { totalMinutes: total, perStop, perHop };
-}
+const titleCase = (s) =>
+  (s || "")
+    .toString()
+    .replace(/\w\S*/g, (t) => t[0].toUpperCase() + t.slice(1).toLowerCase())
+    .trim();
+
+const getReason = (t) =>
+  (
+    t?.body ??
+    t?.reason ??
+    t?.reject_reason ??
+    t?.rejection_reason ??
+    t?.last_reason ??
+    ""
+  )
+    .toString()
+    .trim();
 
 const USERS = [
   { id: 1, name: "Paddy MacGrath (Admin)" },
@@ -104,21 +93,23 @@ const USERS = [
   { id: 3, name: "Una (User 2)" },
 ];
 
-/* ---------------- Auth / Login ---------------- */
+/* ------------------------------------------------------------------ */
+/* Login (demo)                                                       */
+/* ------------------------------------------------------------------ */
 function Login({ onDemoLogin, onGoogleLogin }) {
   const USERS_LOGIN = [
     { id: "paddy", label: "Admin (paddy)" },
     { id: "ulf", label: "User 1 (Ulf)" },
     { id: "una", label: "User 2 (Una)" },
   ];
-  const DEMO_PW = { paddy: "admin123", ulf: "user1", una: "user2"};
+  const DEMO_PW = { paddy: "admin123", ulf: "user1", una: "user2" };
 
   const [who, setWho] = useState("paddy");
   const [pw, setPw] = useState("");
 
   const login = () => {
     if ((DEMO_PW[who] || "") !== pw.trim()) {
-      alert("Wrong password. Demo → paddy:admin123, ulf:user1, una:user2");
+      alert("Demo creds → paddy:admin123, ulf:user1, una:user2");
       return;
     }
     onDemoLogin(who);
@@ -126,115 +117,166 @@ function Login({ onDemoLogin, onGoogleLogin }) {
   };
 
   return (
-    <div className="login-wrap">
-      <div className="login-card">
-        <div className="brand">Simple Task Pro</div>
-        <div className="sub">Sign in to continue</div>
+    <div className="auth-wrap">
+      <div className="auth-card">
+        <div className="brand-top">
+          <div className="brand-title">Simple Task Pro</div>
+          <div className="brand-sub">Sign in to continue</div>
+        </div>
 
         <div className="field">
           <label className="label">User</label>
-          <select
-            className="select"
-            value={who}
-            onChange={(e) => setWho(e.target.value)}
-          >
-            {USERS_LOGIN.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.label}
-              </option>
-            ))}
-          </select>
+          <div className="input-wrap">
+            <span className="prefix">👤</span>
+            <select
+              className="select bare"
+              value={who}
+              onChange={(e) => setWho(e.target.value)}
+            >
+              {USERS_LOGIN.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div className="field">
           <label className="label">Password</label>
-          <input
-            type="password"
-            className="input"
-            value={pw}
-            onChange={(e) => setPw(e.target.value)}
-            placeholder="••••••••"
-          />
+          <div className="input-wrap">
+            <span className="prefix">🔒</span>
+            <input
+              type="password"
+              className="input bare"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              placeholder="••••••••"
+            />
+          </div>
         </div>
 
-        <button className="btn btn-primary" onClick={login}>
+        <button className="btn btn-primary wide" onClick={login}>
           Sign in
         </button>
 
         <div className="divider">or</div>
-        <button className="oauth-btn" onClick={onGoogleLogin}>
-          Continue with Google
+        <button className="btn btn-google wide" onClick={onGoogleLogin}>
+          <span className="gdot red" /> <span className="gdot yellow" />{" "}
+          <span className="gdot green" /> Continue with Google
         </button>
 
-        <div className="sub" style={{ marginTop: 10, fontSize: 12 }}>
-          Demo creds → paddy:admin123, ulf:user1, una:user2
+        <div className="auth-demo">
+          Demo creds → <b>paddy:admin123</b>, <b>ulf:user1</b>, <b>una:user2</b>
         </div>
       </div>
     </div>
   );
 }
 
-/* ---------------- Header ---------------- */
-function Header({ compact, setCompact, onOpenSmartRoute, todaysCount, onCreate }) {
+/* ------------------------------------------------------------------ */
+/* Header + Drawer                                                    */
+/* ------------------------------------------------------------------ */
+function Header({ onOpenSmartRoute, todaysCount, onCreate }) {
   const [me, setMe] = useState(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
   useEffect(() => {
     API("/api/me").then(setMe).catch(() => {});
   }, []);
-  const role = localStorage.getItem("user") || "paddy";
-  const isAdmin = role === "paddy";
+
+  const initials = (me?.name || "User")
+    .split(" ")
+    .map((s) => s[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
 
   return (
-    <div className="app-header">
-      <div className="app-title">Simple Task Pro</div>
-      <div className="spacer" />
-      {isAdmin && (
-        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ opacity: 0.8 }}>Act as:</span>
-          <select
-            className="select"
-            value={role}
-            onChange={(e) => {
-              localStorage.setItem("user", e.target.value);
-              location.reload();
-            }}
-          >
-            <option value="paddy">Paddy MacGrath (Admin)</option>
-            <option value="ulf">Ulf (User 1)</option>
-            <option value="una">Una (User 2)</option>
-          </select>
-        </label>
-      )}
-      <div style={{ opacity: 0.8, marginLeft: 10 }}>
-        {me ? `${me.name} • ${me.role}` : ""}
-      </div>
-      <button
-        className="btn"
-        style={{ marginLeft: 12 }}
-        onClick={() => {
-          localStorage.removeItem("user");
-          window.location.replace("/login");
-        }}
-      >
-        Logout
-      </button>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 12 }}>
-        <button className="btn" onClick={() => setCompact(!compact)}>
-          {compact ? "Compact: ON" : "Compact: OFF"}
+    <>
+      <div className="app-header">
+        <button
+          className={`hamburger ${drawerOpen ? "open" : ""}`}
+          onClick={() => setDrawerOpen((v) => !v)}
+          aria-label="Open menu"
+        >
+          <span />
         </button>
-        {isAdmin && (
-          <button className="btn" onClick={onCreate}>
-            + New Task
-          </button>
-        )}
-        <button className="btn btn-primary" onClick={onOpenSmartRoute}>
+        <div className="app-title">Simple Task Pro</div>
+        <div className="spacer" />
+        <button
+          className="btn btn-primary"
+          style={{ marginLeft: 8 }}
+          onClick={onOpenSmartRoute}
+        >
           Smart Route (today){todaysCount ? ` • ${todaysCount}` : ""}
         </button>
       </div>
-    </div>
+
+      <div
+        className={drawerOpen ? "drawer-backdrop open" : "drawer-backdrop"}
+        onClick={() => setDrawerOpen(false)}
+      />
+      <aside
+        className={drawerOpen ? "drawer open" : "drawer"}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header>
+          <strong>Menu</strong>
+          <button className="btn" onClick={() => setDrawerOpen(false)}>
+            Close
+          </button>
+        </header>
+
+        <div className="userbox">
+          <div className="avatar">{initials}</div>
+          <div className="meta">
+            <div className="name">{me ? me.name : "—"}</div>
+            <div className="rolepill">{me ? me.role : ""}</div>
+          </div>
+        </div>
+
+        <div className="menu">
+          <button
+            className="mitem"
+            onClick={() => {
+              setDrawerOpen(false);
+              onCreate();
+            }}
+          >
+            + New Task
+          </button>
+          <button
+            className="mitem"
+            onClick={() => {
+              setDrawerOpen(false);
+              onOpenSmartRoute();
+            }}
+          >
+            Open Smart Route{todaysCount ? ` • ${todaysCount}` : ""}
+          </button>
+          <button className="mitem" onClick={() => alert("Settings coming soon")}>
+            Settings
+          </button>
+          <button
+            className="mitem warn"
+            onClick={() => {
+              localStorage.removeItem("user");
+              window.location.replace("/login");
+            }}
+          >
+            Logout
+          </button>
+        </div>
+      </aside>
+    </>
   );
 }
 
-/* ---------------- Comments ---------------- */
+/* ------------------------------------------------------------------ */
+/* Comments                                                           */
+/* ------------------------------------------------------------------ */
 function TaskComments({ taskId }) {
   const [comments, setComments] = useState([]);
   const [text, setText] = useState("");
@@ -265,10 +307,9 @@ function TaskComments({ taskId }) {
       <ul style={{ marginTop: 8 }}>
         {comments.map((c) => (
           <li key={c.id} style={{ marginBottom: 6, color: "var(--muted)" }}>
-            <span style={{ opacity: 0.8 }}>{c.author || "User"}</span>
-            {" • "}
+            <span style={{ opacity: 0.8 }}>{c.author || "User"}</span>{" "}
             <span style={{ opacity: 0.7 }}>
-              {new Date(c.created_at).toLocaleString("no-NO")}
+              • {new Date(c.created_at).toLocaleString("no-NO")}
             </span>
             <div>{c.text}</div>
           </li>
@@ -289,7 +330,9 @@ function TaskComments({ taskId }) {
   );
 }
 
-/* ---------------- Modal (Create) ---------------- */
+/* ------------------------------------------------------------------ */
+/* Create Task (modal)                                                */
+/* ------------------------------------------------------------------ */
 function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
   const [students, setStudents] = useState([]);
   const [studentId, setStudentId] = useState("");
@@ -316,7 +359,7 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
 
   const createTask = async () => {
     if (!studentId) {
-      setErr("Select student");
+      setErr("Please select a student");
       return;
     }
     if (!title.trim()) {
@@ -332,11 +375,10 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
           student_id: Number(studentId),
           title: title.trim(),
           address: address.trim() || null,
-          body: null,
+          body: reason ? reason.trim() : null, // shown under REASON
           due_at: defaultDueAt(),
           assignee_user_id: defaultAssigneeId,
           status: "Assigned",
-          reason: reason || null,
           checklist: [],
         }),
       });
@@ -353,7 +395,6 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>New Task</h3>
-
         {err && <div className="alert error">{err}</div>}
 
         <label className="label">Student</label>
@@ -371,23 +412,40 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
         </select>
 
         <label className="label">Title</label>
-        <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <input
+          className="input"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
 
         <label className="label">Address</label>
-        <input className="input" value={address} onChange={(e) => setAddress(e.target.value)} />
+        <input
+          className="input"
+          value={address}
+          onChange={(e) => setAddress(e.target.value)}
+        />
 
         <label className="label">Reason</label>
-        <textarea className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
+        <textarea
+          className="textarea"
+          rows={3}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
 
         <div className="meta" style={{ marginTop: 8, opacity: 0.8 }}>
-          Due: 01/11/2025 15:00 (set automatically)
+          {new Date().toLocaleString("no-NO")}
         </div>
 
         <div className="btns" style={{ marginTop: 12 }}>
           <button className="btn" onClick={onClose} disabled={saving}>
             Cancel
           </button>
-          <button className="btn btn-primary" onClick={createTask} disabled={saving}>
+          <button
+            className="btn btn-primary"
+            onClick={createTask}
+            disabled={saving}
+          >
             {saving ? "Creating..." : "Create"}
           </button>
         </div>
@@ -396,12 +454,14 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
   );
 }
 
-/* ---------------- Modal (Edit) ---------------- */
+/* ------------------------------------------------------------------ */
+/* Edit Task (modal)                                                  */
+/* ------------------------------------------------------------------ */
 function EditModal({ task, onClose, onSaved, isAdmin }) {
   const [title, setTitle] = useState(task.title);
   const [address, setAddress] = useState(task.address || "");
   const [dueAt, setDueAt] = useState(task.due_at || defaultDueAt());
-  const [reason, setReason] = useState(task.reason || "");
+  const [reason, setReason] = useState(getReason(task));
   const [assignee, setAssignee] = useState(task.assignee_user_id || 2);
 
   const [checklist, setChecklist] = useState(
@@ -412,7 +472,6 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
-  // close on ESC, freeze background scroll
   useEffect(() => {
     const onEsc = (e) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onEsc);
@@ -445,13 +504,10 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
     title,
     address: address || null,
     due_at: toIso(dueAt) || null,
-    reason: reason || null,
+    reason: reason || null, // server maps reason -> body
     checklist,
   };
-  // Send kun assignee_user_id dersom admin
-  if (isAdmin) {
-    payloadBase.assignee_user_id = Number(assignee);
-  }
+  if (isAdmin) payloadBase.assignee_user_id = Number(assignee);
 
   const save = async () => {
     setSaving(true);
@@ -470,17 +526,13 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
     }
   };
 
-  const saveAndAssignToday = async () => {
-    if (!isAdmin) return save(); // safety for non-admins
+  const saveAndAssign = async () => {
     setSaving(true);
     setErr("");
     try {
       await API(`/api/tasks/${task.id}`, {
         method: "PATCH",
-        body: JSON.stringify({
-          ...payloadBase,
-          due_at: todayAt(10, 0),
-        }),
+        body: JSON.stringify(payloadBase),
       });
       await API(`/api/tasks/${task.id}/assign`, {
         method: "POST",
@@ -495,13 +547,23 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
     }
   };
 
+  const deleteTask = async () => {
+    if (!confirm("Delete this task?")) return;
+    try {
+      await fetch(`http://localhost:8000/api/tasks/${task.id}`, {
+        method: "DELETE",
+        headers: { "X-User": localStorage.getItem("user") || "paddy" },
+      });
+      await onSaved();
+      onClose();
+    } catch (e) {
+      alert(e?.message || "Failed to delete");
+    }
+  };
+
   return (
-    <div className="modal-backdrop">{/* Ikke lukk ved backdrop-click */}
-      <div
-        className="modal"
-        onClick={(e) => e.stopPropagation()} // don't close when clicking inside
-      >
-        {/* Header with explicit Close (×) */}
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="row" style={{ alignItems: "center", marginBottom: 8 }}>
           <h3 style={{ margin: 0, flex: 1 }}>Edit task</h3>
           <button
@@ -523,25 +585,52 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
         {err && <div className="alert error">{err}</div>}
 
         <label className="label">Title</label>
-        <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <input
+          className="input"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
 
         <label className="label">Address</label>
-        <input className="input" value={address} onChange={(e) => setAddress(e.target.value)} />
+        <input
+          className="input"
+          value={address}
+          onChange={(e) => setAddress(e.target.value)}
+        />
 
         <label className="label">Due (yyyy-mm-dd hh:mm)</label>
-        <input className="input" value={dueAt || ""} onChange={(e) => setDueAt(e.target.value)} />
+        <input
+          className="input"
+          value={dueAt || ""}
+          onChange={(e) => setDueAt(e.target.value)}
+        />
 
         <label className="label">Reason</label>
-        <textarea className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} />
+        <textarea
+          className="textarea"
+          rows={3}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
 
-        {/* Checklist */}
         <div className="card" style={{ marginTop: 10 }}>
           <strong>Checklist</strong>
           <ul style={{ marginTop: 8 }}>
             {checklist.map((it, i) => (
               <li key={i} className="row" style={{ gap: 8 }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
-                  <input type="checkbox" checked={!!it.done} onChange={() => toggleItem(i)} />
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    flex: 1,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!it.done}
+                    onChange={() => toggleItem(i)}
+                  />
                   <input
                     className="input"
                     value={it.text}
@@ -552,7 +641,9 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
                     }}
                   />
                 </label>
-                <button className="btn btn-danger" onClick={() => removeItem(i)}>Remove</button>
+                <button className="btn btn-danger" onClick={() => removeItem(i)}>
+                  Remove
+                </button>
               </li>
             ))}
           </ul>
@@ -563,34 +654,50 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
               value={newItem}
               onChange={(e) => setNewItem(e.target.value)}
             />
-            <button className="btn" onClick={addItem}>Add</button>
+            <button className="btn" onClick={addItem}>
+              Add
+            </button>
           </div>
         </div>
 
-        {/* Assign (Admin only) */}
         {isAdmin && (
           <div className="row" style={{ gap: 8, marginTop: 10 }}>
-            <label className="label" style={{ margin: 0 }}>Assign to</label>
+            <label className="label" style={{ margin: 0 }}>
+              Assign to
+            </label>
             <select
               className="select"
               value={assignee}
               onChange={(e) => setAssignee(e.target.value)}
             >
-              {USERS.filter(u => u.id !== 1).map((u) => (
-                <option key={u.id} value={u.id}>{u.name}</option>
+              {USERS.filter((u) => u.id !== 1).map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name}
+                </option>
               ))}
             </select>
           </div>
         )}
 
         <div className="btns" style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}>
-          <button className="btn" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
           <button className="btn" onClick={save} disabled={saving}>
             {saving ? "Saving..." : "Save"}
           </button>
           {isAdmin && (
-            <button className="btn btn-primary" onClick={saveAndAssignToday} disabled={saving}>
-              {saving ? "Working..." : "Save & Assign (today)"}
+            <button
+              className="btn btn-primary"
+              onClick={saveAndAssign}
+              disabled={saving}
+            >
+              {saving ? "Working…" : "Save & Assign"}
+            </button>
+          )}
+          {isAdmin && (
+            <button className="btn btn-danger" onClick={deleteTask} disabled={saving}>
+              Delete
             </button>
           )}
         </div>
@@ -601,128 +708,69 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
   );
 }
 
-/* ---------------- Hooks ---------------- */
+/* ------------------------------------------------------------------ */
+/* Data hook                                                          */
+/* ------------------------------------------------------------------ */
 function useTasks() {
   const [tasks, setTasks] = useState([]);
-  const reload = () => API("/api/tasks").then(setTasks).catch(() => setTasks([]));
+  const reload = async () => {
+    try {
+      setTasks(await API("/api/tasks"));
+    } catch {
+      setTasks([]);
+    }
+  };
   useEffect(() => {
     reload();
   }, []);
   return { tasks, reload };
 }
 
-/* ---------------- Filter bar ---------------- */
-function FilterBar({ setQuery, setStatus, setUser, bulkMode, setBulkMode }) {
-  if (!FLAGS.filters && !FLAGS.bulk) return null;
-  return (
-    <div className="filterbar">
-      {FLAGS.filters && (
-        <>
-          <input
-            className="input"
-            placeholder="Search student/title/address..."
-            onChange={(e) => setQuery(e.target.value.toLowerCase())}
-          />
-          <select
-            className="select-sm"
-            onChange={(e) => setStatus(e.target.value)}
-            defaultValue=""
-          >
-            <option value="">All statuses</option>
-            <option>New</option>
-            <option>Assigned</option>
-            <option>Accepted</option>
-            <option>Rejected</option>
-            <option>Done</option>
-          </select>
-          <select
-            className="select-sm"
-            onChange={(e) => setUser(e.target.value)}
-            defaultValue=""
-          >
-            <option value="">All users</option>
-            <option value="2">User 1 (Ulf)</option>
-            <option value="3">User 2 (Una)</option>
-            <option value="none">Unassigned</option>
-          </select>
-        </>
-      )}
-      {FLAGS.bulk && (
-        <button className="btn" onClick={() => setBulkMode(!bulkMode)}>
-          {bulkMode ? "Exit Bulk" : "Bulk select"}
-        </button>
-      )}
-    </div>
-  );
-}
-
-/* ---------------- Task / Column / Bulk ---------------- */
-function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact, meId, isAdmin }) {
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [history, setHistory] = useState([]);
-  const [showEdit, setShowEdit] = useState(false);
-
-  const loadHistory = () =>
-    API(`/api/students/${t.student_id}/history?days=90`).then(setHistory);
-
-  const act = (action, reason) =>
-    API(`/api/tasks/${t.id}/status`, {
-      method: "POST",
-      body: JSON.stringify({ action, reason }),
-    }).then(reload);
-
-  const onDragStart = (e) => {
-    if (!FLAGS.dnd) return;
-    e.dataTransfer.setData("text/taskId", String(t.id));
+/* ------------------------------------------------------------------ */
+/* Task Card + Column                                                 */
+/* ------------------------------------------------------------------ */
+function TaskCard({ t, reload, compact, meId, isAdmin }) {
+  const act = async (action, reason) => {
+    try {
+      await API(`/api/tasks/${t.id}/status`, {
+        method: "POST",
+        body: JSON.stringify({ action, reason }),
+      });
+      if (action === "reject") t.body = (reason || "").toString();
+      await reload();
+    } catch (e) {
+      alert(e?.message || "Failed to update task");
+    }
   };
-
   const canEdit = isAdmin || t.assignee_user_id === meId;
-
+  const reasonText = titleCase(getReason(t));
   return (
     <div
-      className={`task ${compact ? "compact" : ""}`}
-      draggable={FLAGS.dnd}
-      onDragStart={onDragStart}
+      className={`task ${compact ? "compact" : ""} ${
+        t.status === "Rejected" ? "rejected" : ""
+      }`}
     >
-      <div className="row">
+      <div className="row" style={{ justifyContent: "space-between" }}>
         <div className="title">{t.title}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {bulkMode && (
-            <input
-              type="checkbox"
-              className="checkbox"
-              checked={!!selected}
-              onChange={() => toggleSelect(t.id)}
-            />
-          )}
-          <small className="badge">{t.status}</small>
-        </div>
+        <small className={`badge ${t.status === "Rejected" ? "rejected" : ""}`}>
+          {t.status}
+        </small>
       </div>
-      <div className="meta">
-        Due: {fmtNO(t.due_at)} • Address: {t.address || "-"}
-      </div>
-      {t.reason && (
-        <div className="meta" style={{ marginTop: 4, opacity: 0.85 }}>
-          Reason: {t.reason}
+
+      {!!reasonText && (
+        <div className="mt-1">
+          <div className="reason-label">REASON</div>
+          <div className={`reason-text ${t.status === "Rejected" ? "red" : ""}`}>
+            {reasonText}
+          </div>
         </div>
       )}
+
+      <div className="meta">
+        {fmtNO(t.due_at)} • Address: {t.address || "-"}
+      </div>
+
       <div className="btns">
-        <button
-          className="btn"
-          onClick={() => {
-            setHistoryOpen(true);
-            loadHistory();
-          }}
-        >
-          History
-        </button>
-
-        {canEdit && (
-          <button className="btn" onClick={() => setShowEdit(true)}>
-            Edit
-          </button>
-        )}
-
         <button
           className="btn"
           onClick={() =>
@@ -736,101 +784,50 @@ function TaskCard({ t, reload, bulkMode, toggleSelect, selected, compact, meId, 
         >
           Open in Maps
         </button>
-        <button className="btn" onClick={() => act("accept")}>
-          Accept
-        </button>
-        <button
-          className="btn"
-          onClick={() => {
-            const r = prompt("Reject reason?");
-            if (r) act("reject", r);
-          }}
-        >
-          Reject
-        </button>
+
+        {/* Admin never sees accept/reject */}
+        {!isAdmin && (
+          <button className="btn" onClick={() => act("accept")}>
+            Accept
+          </button>
+        )}
+        {!isAdmin && (
+          <button
+            className="btn"
+            onClick={async () => {
+              const r = prompt("Reject reason?");
+              if (!r) return;
+              await act("reject", r);
+            }}
+          >
+            Reject
+          </button>
+        )}
+
         <button className="btn btn-primary" onClick={() => act("complete")}>
           Complete
         </button>
+        {canEdit && (
+          <button
+            className="btn"
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent("edit-task", { detail: { task: t } })
+              )
+            }
+          >
+            Edit
+          </button>
+        )}
       </div>
-
-      {showEdit && (
-        <EditModal
-          task={t}
-          onClose={() => setShowEdit(false)}
-          onSaved={reload}
-          isAdmin={isAdmin}
-        />
-      )}
-
-      {historyOpen && (
-        <div
-          style={{
-            marginTop: 8,
-            padding: 10,
-            background: "rgba(2,6,23,.5)",
-            border: "1px solid var(--border)",
-            borderRadius: 12,
-          }}
-        >
-          <div className="row">
-            <strong>Student history (last 90 days)</strong>
-            <button className="btn" onClick={() => setHistoryOpen(false)}>
-              Close
-            </button>
-          </div>
-          <ul>
-            {history.map((h, i) => (
-              <li key={i} style={{ color: "var(--muted)" }}>
-                {h.kind === "absence"
-                  ? `[Absence] ${dNO(h.date)} • ${h.reason_code} • ${h.reported_by} • ${h.note || ""}`
-                  : `[Visit] ${dNO(h.date)} • ${h.title}`}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }
 
-function Column({
-  title,
-  filter,
-  dropAction,
-  tasks,
-  reload,
-  bulkMode,
-  selection,
-  toggleSelect,
-  compact,
-  meId,
-  isAdmin,
-}) {
-  const [dropping, setDropping] = useState(false);
+function Column({ title, filter, tasks, reload, compact, meId, isAdmin }) {
   const list = tasks.filter(filter);
-  const onDragOver = (e) => {
-    if (FLAGS.dnd) {
-      e.preventDefault();
-      setDropping(true);
-    }
-  };
-  const onDragLeave = () => setDropping(false);
-  const onDrop = async (e) => {
-    if (!FLAGS.dnd) return;
-    e.preventDefault();
-    setDropping(false);
-    const id = Number(e.dataTransfer.getData("text/taskId"));
-    if (!id) return;
-    await dropAction?.(id);
-    reload();
-  };
   return (
-    <div
-      className={dropping ? "col dropping" : "col"}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
-    >
+    <div className="col">
       <h3>{title}</h3>
       <div className="drop-hint">Drop here</div>
       {list.map((t) => (
@@ -838,9 +835,6 @@ function Column({
           key={t.id}
           t={t}
           reload={reload}
-          bulkMode={bulkMode}
-          selected={selection.has(t.id)}
-          toggleSelect={toggleSelect}
           compact={compact}
           meId={meId}
           isAdmin={isAdmin}
@@ -850,211 +844,247 @@ function Column({
   );
 }
 
-function BulkBar({ selection, reload }) {
-  const ids = Array.from(selection);
-  if (ids.length === 0) return null;
-
-  const bulkAssign = async (assignee_user_id) => {
-    await Promise.all(
-      ids.map((id) =>
-        API(`/api/tasks/${id}/assign`, {
-          method: "POST",
-          body: JSON.stringify({ assignee_user_id }),
-        })
-      )
-    );
-    reload();
-  };
-  const bulkComplete = async () => {
-    await Promise.all(
-      ids.map((id) =>
-        API(`/api/tasks/${id}/status`, {
-          method: "POST",
-          body: JSON.stringify({ action: "complete" }),
-        })
-      )
-    );
-    reload();
-  };
-  const bulkDelete = async () => {
-    if (!confirm("Delete selected tasks?")) return;
-    await Promise.all(
-      ids.map((id) =>
-        fetch(`http://localhost:8000/api/tasks/${id}`, {
-          method: "DELETE",
-          headers: { "X-User": localStorage.getItem("user") || "paddy" },
-        })
-      )
-    );
-    reload();
-  };
-
-  return (
-    <div className="bulkbar">
-      <div style={{ opacity: 0.8 }}>Selected: {ids.length}</div>
-      <button className="btn" onClick={() => bulkAssign(2)}>
-        Assign to Ulf
-      </button>
-      <button className="btn" onClick={() => bulkAssign(3)}>
-        Assign to Una
-      </button>
-      <button className="btn btn-primary" onClick={bulkComplete}>
-        Mark Complete
-      </button>
-      <button className="btn btn-danger" onClick={bulkDelete}>
-        Delete
-      </button>
-    </div>
-  );
-}
-
-/* ---------------- Admin Board ---------------- */
-function AdminBoard({ compact, tasks, reload, isAdmin, meId, onCreate }) {
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState("");
-  const [user, setUser] = useState("");
-  const [bulkMode, setBulkMode] = useState(false);
-  const [selection, setSelection] = useState(new Set());
-  const [sortBy, setSortBy] = useState("due_at");
-  const [sortOrder, setSortOrder] = useState("asc");
-  const [whenFilter, setWhenFilter] = useState("all"); // 'all' | 'today' | 'later'
-
-  const toggleSelect = (id) => {
-    const s = new Set(selection);
-    s.has(id) ? s.delete(id) : s.add(id);
-    setSelection(s);
-  };
-
-  const filtered = useMemo(() => {
+/* ------------------------------------------------------------------ */
+/* Admin/User board                                                   */
+/* ------------------------------------------------------------------ */
+function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
+  if (!isAdmin) {
+    const [scope, setScope] = useState("today");
     const todayStr = new Date().toISOString().slice(0, 10);
-    const isToday = (iso) => iso && iso.slice(0, 10) === todayStr;
-    const isLater = (iso) => iso && iso.slice(0, 10) > todayStr;
-
-    const base = tasks.filter((t) => {
-      if (query && !(`${t.title}|${t.address || ""}`.toLowerCase().includes(query)))
-        return false;
-
-      if (status && t.status !== status) return false;
-
-      if (user) {
-        if (user === "none" && t.assignee_user_id != null) return false;
-        if (user !== "none" && String(t.assignee_user_id) !== String(user)) return false;
+    const forMe = useMemo(
+      () => tasks.filter((t) => t.assignee_user_id === meId),
+      [tasks, meId]
+    );
+    const filtered = useMemo(() => {
+      switch (scope) {
+        case "today":
+          return forMe.filter(
+            (t) => onlyDateStr(t.due_at) === todayStr && t.status !== "Done"
+          );
+        case "upcoming":
+          return forMe.filter(
+            (t) => onlyDateStr(t.due_at) > todayStr && t.status !== "Done"
+          );
+        case "done":
+          return forMe.filter((t) => t.status === "Done");
+        default:
+          return forMe.filter((t) => t.status !== "Done");
       }
+    }, [forMe, scope, todayStr]);
+    const sorted = useMemo(
+      () => filtered.slice().sort((a, b) => ((a.due_at || "") > (b.due_at || "") ? 1 : -1)),
+      [filtered]
+    );
+    return (
+      <>
+        <div className="chipbar">
+          <button
+            className={`chip ${scope === "today" ? "active" : ""}`}
+            onClick={() => setScope("today")}
+          >
+            Today
+          </button>
+          <button
+            className={`chip ${scope === "upcoming" ? "active" : ""}`}
+            onClick={() => setScope("upcoming")}
+          >
+            Upcoming
+          </button>
+          <button
+            className={`chip ${scope === "done" ? "active" : ""}`}
+            onClick={() => setScope("done")}
+          >
+            Done
+          </button>
+          <button
+            className={`chip ${scope === "all" ? "active" : ""}`}
+            onClick={() => setScope("all")}
+          >
+            All
+          </button>
+        </div>
+        <div className="board">
+          <Column
+            title={
+              scope === "today"
+                ? "Today"
+                : scope === "upcoming"
+                ? "Upcoming"
+                : scope === "done"
+                ? "Done"
+                : "My tasks"
+            }
+            filter={() => true}
+            tasks={sorted}
+            reload={reload}
+            compact={compact}
+            meId={meId}
+            isAdmin={false}
+          />
+        </div>
+      </>
+    );
+  }
 
-      if (whenFilter === "today" && !(t.due_at && isToday(t.due_at))) return false;
-      if (whenFilter === "later" && !(t.due_at && isLater(t.due_at))) return false;
+  // Admin view
+  const [view, setView] = useState("overview"); // overview | perUser
+  const [statusFilter, setStatusFilter] = useState("all"); // all | active | new | rejected | done
+  const [userFilter, setUserFilter] = useState("");
 
-      return true;
-    });
+  const statusMatch = (t) => {
+    switch (statusFilter) {
+      case "active":
+        return t.status !== "Done" && t.status !== "Rejected";
+      case "new":
+        return t.status === "New";
+      case "rejected":
+        return t.status === "Rejected";
+      case "done":
+        return t.status === "Done";
+      default:
+        return true;
+    }
+  };
 
-    const pick = (t) =>
-      (sortBy === "updated_at" ? t.updated_at :
-       sortBy === "completed_at" ? t.completed_at :
-       t.due_at) || "";
+  const usersFromTasks = useMemo(() => {
+    const map = new Map();
+    for (const t of tasks)
+      if (t.assignee_user_id != null) map.set(t.assignee_user_id, `User ${t.assignee_user_id}`);
+    for (const u of USERS) if (map.has(u.id)) map.set(u.id, u.name);
+    return Array.from(map.entries()).sort((a, b) =>
+      String(a[1]).localeCompare(String(b[1]))
+    );
+  }, [tasks]);
 
-    return base.slice().sort((a, b) => {
-      const av = pick(a), bv = pick(b);
-      if (av === bv) return 0;
-      return (av > bv ? 1 : -1) * (sortOrder === "desc" ? -1 : 1);
-    });
-  }, [tasks, query, status, user, whenFilter, sortBy, sortOrder]);
+  const sorted = useMemo(
+    () => tasks.slice().sort((a, b) => ((a.due_at || "") > (b.due_at || "") ? 1 : -1)),
+    [tasks]
+  );
+  const filtered = useMemo(() => sorted.filter(statusMatch), [sorted, statusFilter]);
 
-  const assignTo = (uid) => async (taskId) =>
-    API(`/api/tasks/${taskId}/assign`, {
-      method: "POST",
-      body: JSON.stringify({ assignee_user_id: uid }),
-    });
-
-  const markDone = async (taskId) =>
-    API(`/api/tasks/${taskId}/status`, {
-      method: "POST",
-      body: JSON.stringify({ action: "complete" }),
-    });
-
-  const col = (title, filter, dropAction) => (
+  const col = (title, filter) => (
     <Column
       title={title}
       filter={filter}
       tasks={filtered}
       reload={reload}
-      bulkMode={bulkMode}
-      selection={selection}
-      toggleSelect={toggleSelect}
-      dropAction={dropAction}
       compact={compact}
       meId={meId}
-      isAdmin={isAdmin}
+      isAdmin={true}
     />
   );
 
   return (
     <>
-      <FilterBar
-        setQuery={setQuery}
-        setStatus={setStatus}
-        setUser={setUser}
-        bulkMode={bulkMode}
-        setBulkMode={setBulkMode}
-      />
-      <div className="subbar">
-        <label>Sort by:&nbsp;
-          <select className="select-sm" value={sortBy} onChange={(e)=>setSortBy(e.target.value)}>
-            <option value="due_at">Due date</option>
-            <option value="updated_at">Updated</option>
-            <option value="completed_at">Completed</option>
+      <div className="filterbar">
+        <label className="inline no-shrink">
+          View
+          <select
+            className="select-sm"
+            value={view}
+            onChange={(e) => setView(e.target.value)}
+          >
+            <option value="overview">Overview</option>
+            <option value="perUser">Per user</option>
           </select>
         </label>
-        <label style={{ marginLeft: 8 }}>Order:&nbsp;
-          <select className="select-sm" value={sortOrder} onChange={(e)=>setSortOrder(e.target.value)}>
-            <option value="asc">Asc</option>
-            <option value="desc">Desc</option>
-          </select>
-        </label>
-        <label style={{ marginLeft: 8 }}>When:&nbsp;
-          <select className="select-sm" value={whenFilter} onChange={(e)=>setWhenFilter(e.target.value)}>
+
+        <label className="inline no-shrink">
+          Status
+          <select
+            className="select-sm"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
             <option value="all">All</option>
-            <option value="today">Today</option>
-            <option value="later">Later</option>
+            <option value="active">Active</option>
+            <option value="new">New</option>
+            <option value="rejected">Rejected</option>
+            <option value="done">Done</option>
           </select>
         </label>
-      </div>
 
-      {/* New Task button - Admin only */}
-      {isAdmin && (
-        <div className="row" style={{ padding: "0 8px 8px", gap: 8 }}>
-          <button className="btn btn-primary" onClick={onCreate}>
-            + New Task
-          </button>
-        </div>
-      )}
-
-      <div className="board">
-        {isAdmin ? (
-          <>
-            {col("New", (t) => t.status === "New", null)}
-            {col("User 1", (t) => t.assignee_user_id === 2 && t.status !== "Done", assignTo(2))}
-            {col("User 2", (t) => t.assignee_user_id === 3 && t.status !== "Done", assignTo(3))}
-            {col("Done", (t) => t.status === "Done", markDone)}
-          </>
-        ) : (
-          <>
-            {col("My tasks", (t) => t.assignee_user_id === meId && t.status !== "Done", null)}
-            {col("Done", (t) => t.assignee_user_id === meId && t.status === "Done", null)}
-          </>
+        {view === "perUser" && (
+          <label className="inline no-shrink">
+            User
+            <select
+              className="select-sm"
+              value={userFilter}
+              onChange={(e) => setUserFilter(e.target.value)}
+            >
+              <option value="">(select user)</option>
+              {usersFromTasks.map(([id, name]) => (
+                <option key={id} value={String(id)}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
         )}
       </div>
 
-      <BulkBar selection={selection} reload={reload} />
+      {view === "overview" ? (
+        statusFilter === "all" ? (
+          <div className="board">
+            {col("New", (t) => t.status === "New")}
+            {col("Rejected", (t) => t.status === "Rejected")}
+            {col("Done", (t) => t.status === "Done")}
+          </div>
+        ) : (
+          <div className="board">
+            {col(
+              statusFilter === "active"
+                ? "Active"
+                : statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1),
+              () => true
+            )}
+          </div>
+        )
+      ) : (
+        <div className="board">
+          {userFilter ? (
+            <>
+              {col(
+                "Active",
+                (t) =>
+                  String(t.assignee_user_id) === String(userFilter) &&
+                  (statusFilter === "all"
+                    ? t.status !== "Done" && t.status !== "Rejected"
+                    : statusMatch(t))
+              )}
+              {(statusFilter === "all" || statusFilter === "done") &&
+                col(
+                  "Done",
+                  (t) =>
+                    String(t.assignee_user_id) === String(userFilter) &&
+                    t.status === "Done"
+                )}
+              {statusFilter === "rejected" &&
+                col(
+                  "Rejected",
+                  (t) =>
+                    String(t.assignee_user_id) === String(userFilter) &&
+                    t.status === "Rejected"
+                )}
+            </>
+          ) : (
+            <div className="card empty" style={{ margin: "8px 10px" }}>
+              Choose a user to view their tasks.
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }
 
-/* ---------------- Route Tab ---------------- */
+/* ------------------------------------------------------------------ */
+/* Route tab                                                          */
+/* ------------------------------------------------------------------ */
 function RouteTab({ tasksForMeToday }) {
   const sorted = tasksForMeToday
     .slice()
     .sort((a, b) => new Date(a.due_at) - new Date(b.due_at));
-  const est = estimateDurations(sorted);
   const openSmartRoute = () => {
     const addrs = sorted.map((t) => t.address).filter(Boolean);
     const url = buildSmartRouteUrl(addrs);
@@ -1062,24 +1092,24 @@ function RouteTab({ tasksForMeToday }) {
   };
   return (
     <div style={{ padding: "8px 12px" }}>
-      <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+      <div
+        className="row"
+        style={{ justifyContent: "space-between", marginBottom: 8 }}
+      >
         <div style={{ opacity: 0.85 }}>{sorted.length} visits today</div>
         <button className="btn btn-primary" onClick={openSmartRoute}>
           Open Smart Route
         </button>
       </div>
-      <div className="row" style={{ opacity: 0.8, marginBottom: 10 }}>
-        Estimate ~ {minutes(est.totalMinutes)} min (incl. travel).
-      </div>
       {sorted.map((t) => (
         <div key={t.id} className="task">
-          <div className="row">
+          <div className="row" style={{ justifyContent: "space-between" }}>
             <div className="title">{t.title}</div>
             <small className="badge">{t.status}</small>
           </div>
-          <div className="meta">
-            Due: {fmtNO(t.due_at)} • Address: {t.address || "-"}
-          </div>
+            <div className="meta">
+              {fmtNO(t.due_at)} • Address: {t.address || "-"}
+            </div>
           <div className="btns">
             <button
               className="btn"
@@ -1101,9 +1131,33 @@ function RouteTab({ tasksForMeToday }) {
   );
 }
 
-/* ---------------- App ---------------- */
+/* ------------------------------------------------------------------ */
+/* Bottom nav                                                         */
+/* ------------------------------------------------------------------ */
+function BottomNav({ onBack, onHome, onOverview }) {
+  return (
+    <nav className="bottom-nav" role="navigation" aria-label="Primary">
+      <button className="bnav-btn" onClick={onBack}>
+        <div className="bnav-ico">🔙</div>
+        <div className="bnav-txt">Back</div>
+      </button>
+      <button className="bnav-btn" onClick={onHome}>
+        <div className="bnav-ico">🏠</div>
+        <div className="bnav-txt">Home</div>
+      </button>
+      <button className="bnav-btn" onClick={onOverview}>
+        <div className="bnav-ico">⬜</div>
+        <div className="bnav-txt">Overview</div>
+      </button>
+    </nav>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* App                                                                */
+/* ------------------------------------------------------------------ */
 function App() {
-  const [compact, setCompact] = useState(false);
+  const [compact] = useState(true);
   const [activeTab, setActiveTab] = useState("board");
   const [authed, setAuthed] = useState(!!localStorage.getItem("user"));
   const [showCreate, setShowCreate] = useState(false);
@@ -1120,9 +1174,7 @@ function App() {
     setAuthed(true);
     window.location.replace("/");
   };
-  const onGoogleLogin = () =>
-    alert("Google Sign-In placeholder: configure OAuth backend.");
-
+  const onGoogleLogin = () => alert("Google Sign-In placeholder.");
   if (!authed) return <Login onDemoLogin={onDemoLogin} onGoogleLogin={onGoogleLogin} />;
 
   const role = localStorage.getItem("user") || "paddy";
@@ -1133,13 +1185,9 @@ function App() {
   const myAssigned = (tasks || []).filter(
     (t) => t.assignee_user_id === meId && t.status !== "Done" && t.due_at
   );
-  const targetDate =
-    myAssigned.find((t) => onlyDateStr(t.due_at) === todayISO)?.due_at ||
-    todayISO;
   const tasksForMeToday = myAssigned.filter(
-    (t) => onlyDateStr(t.due_at) === onlyDateStr(targetDate)
+    (t) => onlyDateStr(t.due_at) === todayISO
   );
-  const todaysCount = tasksForMeToday.length;
 
   const openSmartRoute = () => {
     if (!tasksForMeToday.length) return;
@@ -1148,29 +1196,66 @@ function App() {
     if (url) window.open(url, "_blank");
   };
 
+  const [editTask, setEditTask] = useState(null);
+  useEffect(() => {
+    const handler = (e) => setEditTask(e.detail.task);
+    window.addEventListener("edit-task", handler);
+    return () => window.removeEventListener("edit-task", handler);
+  }, []);
+
+  const goBack = () => {
+    if (window.history.length > 1) window.history.back();
+    else window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const goHome = () => {
+    setActiveTab("board");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const goOverview = () => {
+    setActiveTab("board");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   return (
     <>
       <Header
-        compact={compact}
-        setCompact={setCompact}
         onOpenSmartRoute={openSmartRoute}
-        todaysCount={todaysCount}
+        todaysCount={tasksForMeToday.length}
         onCreate={() => setShowCreate(true)}
       />
+
+      {/* Tabs: stable grid with right-anchored "+ New Task" */}
       <div className="tabs">
-        <button
-          className={activeTab === "board" ? "tab active" : "tab"}
-          onClick={() => setActiveTab("board")}
-        >
-          Board
-        </button>
-        <button
-          className={activeTab === "route" ? "tab active" : "tab"}
-          onClick={() => setActiveTab("route")}
-        >
-          Route
-        </button>
+        <div className="tabs-left">
+          <button
+            className={activeTab === "board" ? "tab active" : "tab"}
+            onClick={() => setActiveTab("board")}
+          >
+            Board
+          </button>
+          {!isAdmin && (
+            <button
+              className={activeTab === "route" ? "tab active" : "tab"}
+              onClick={() => setActiveTab("route")}
+            >
+              Route
+            </button>
+          )}
+        </div>
+
+        <div className="tabs-right">
+          {isAdmin && (
+            <button
+              className="tab link no-shrink"
+              onClick={() => setShowCreate(true)}
+              aria-label="Create new task"
+            >
+              + New Task
+            </button>
+          )}
+        </div>
       </div>
+
       {activeTab === "board" ? (
         <AdminBoard
           compact={compact}
@@ -1178,13 +1263,11 @@ function App() {
           reload={reload}
           isAdmin={isAdmin}
           meId={meId}
-          onCreate={() => setShowCreate(true)}
         />
       ) : (
         <RouteTab tasksForMeToday={tasksForMeToday} />
       )}
 
-      {/* Admin-only create modal */}
       {isAdmin && showCreate && (
         <CreateModal
           defaultAssigneeId={2}
@@ -1192,6 +1275,17 @@ function App() {
           onCreated={reload}
         />
       )}
+
+      {editTask && (
+        <EditModal
+          task={editTask}
+          onClose={() => setEditTask(null)}
+          onSaved={reload}
+          isAdmin={isAdmin}
+        />
+      )}
+
+      <BottomNav onBack={goBack} onHome={goHome} onOverview={goOverview} />
     </>
   );
 }
