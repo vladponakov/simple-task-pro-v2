@@ -227,6 +227,11 @@ def edit_task(task_id: int, data: TaskEdit, db: Session = Depends(get_db), user:
 
     # Role-aware whitelist: Admin may edit all; Assignee may edit safe fields only
     payload = data.model_dump(exclude_unset=True)
+
+    # --- NEW: Unify 'reason' -> 'body' so both Edit Reason and Reject reason share same field
+    if "reason" in payload and "body" not in payload:
+        payload["body"] = payload.pop("reason")
+
     if user.role != Role.ADMIN:
         if t.assignee_user_id != user.id and t.created_by != user.id:
             raise HTTPException(status_code=403, detail="Forbidden")
@@ -294,6 +299,7 @@ def change_status(task_id: int, data: StatusIn, db: Session = Depends(get_db), u
         if not data.reason:
             raise HTTPException(status_code=400, detail="Reason required for reject")
         t.status = TaskStatus.REJECTED
+        t.body = (data.reason or "").strip()  # --- NEW: persist reason into Task.body
         log_event(db, t, user, TaskEventType.REJECT, {"reason": data.reason, "at": now_iso})
     elif action == "complete":
         t.status = TaskStatus.DONE
