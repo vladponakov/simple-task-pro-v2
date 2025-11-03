@@ -7,6 +7,7 @@ from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -42,6 +43,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# where the built frontend is copied by Render's build step
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+
+# Serve hashed assets like /assets/index-XXXX.js and .css
+assets_dir = os.path.join(static_dir, "assets")
+if os.path.isdir(assets_dir):
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
 # Avoid caching index.html so the latest UI is loaded after deploys
 @app.middleware("http")
@@ -318,18 +327,13 @@ def task_events(task_id: int, db: Session = Depends(get_db), user: User = Depend
 
 # -------------------- SPA fallback (last) --------------------
 
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-
 @app.head("/")
 def head_root():
     return Response(status_code=200)
 
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str, request: Request):
-    # Do not swallow API/docs/assets
-    if full_path.startswith(("api/", "docs", "redoc", "openapi.json", "assets/")):
-        raise HTTPException(status_code=404)
-    # Serve index.html for client-side routing
+    # Let mounted routes (/assets, /api, docs) take priority; this is last resort.
     if os.path.isdir(static_dir):
         return FileResponse(os.path.join(static_dir, "index.html"))
     raise HTTPException(status_code=404)
