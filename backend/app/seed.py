@@ -1,64 +1,24 @@
-# ================================================================
-# BLOCK: SEED
-# Purpose: Idempotent seeding for Simple Task Pro (no CSV needed)
-# Models expected: User, Student, Task, TaskComment, StudentHistory
-# Status values: "New" | "Assigned" | "Rejected" | "Done"
-# ================================================================
-
+# app/seed.py
 from __future__ import annotations
 import argparse
-import os
-import random
 from datetime import datetime, timedelta, timezone
+from random import randint, choice
+from typing import Optional, List
 
-from sqlalchemy.orm import Session
-
-from .db import Base, engine, SessionLocal
-from .models import User, Student, Task, TaskComment, StudentHistory
+from app.db import Base, engine, SessionLocal
+from app.models import User, Student, Task, TaskStatus, Role
 
 UTC = timezone.utc
+NOW = datetime.now(UTC)
 
-# ------------------------ helpers ------------------------
+# ---------------- helpers ----------------
 
-def now_utc():
-    return datetime.now(tz=UTC).replace(microsecond=0)
-
-def today_at(hour: int, minute: int = 0):
-    t = datetime.now(tz=UTC).astimezone(UTC)
-    return t.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-LONDON_ADDR = [
-    "221B Baker St, London",
-    "10 Downing St, London",
-    "Trafalgar Square, London",
-    "1 Canada Square, London",
-    "30 St Mary Axe, London",
-    "Buckingham Palace, London",
-    "Tower Bridge, London",
-    "King's Cross Station, London",
-    "Royal Albert Hall, London",
-    "Piccadilly Circus, London",
-    "Covent Garden, London",
-    "Canary Wharf, London",
-]
-
-FIRST = ["Oliver","Amelia","Jack","Isla","Harry","Emily","George","Sophie","Noah","Ava","Leo","Mia","James","Grace","Oscar","Chloe","Thomas","Ella"]
-LAST  = ["Smith","Johnson","Williams","Brown","Jones","Davis","Miller","Taylor","Wilson","Moore","Clark","Hall","Young","King","Wright","Hill","Scott","Green"]
-
-def mk_name():
-    return f"{random.choice(FIRST)} {random.choice(LAST)}"
-
-def mk_addr():
-    return random.choice(LONDON_ADDR)
-
-# ------------------------ ensure primitives ------------------------
-
-def ensure_user(db: Session, user_id: int, name: str, role: str) -> User:
-    u = db.query(User).filter(User.id == user_id).first()
+def ensure_user(s, id_: int, name: str, role: Role) -> User:
+    u: Optional[User] = s.get(User, id_)
     if not u:
-        u = User(id=user_id, name=name, role=role)
-        db.add(u); db.commit(); db.refresh(u)
-        print(f"[SEED] created user #{user_id}: {name} ({role})")
+        u = User(id=id_, name=name, role=role)
+        s.add(u); s.commit(); s.refresh(u)
+        print(f"[SEED] created user #{id_}: {name} ({role.value})")
     else:
         changed = False
         if u.name != name:
@@ -66,177 +26,150 @@ def ensure_user(db: Session, user_id: int, name: str, role: str) -> User:
         if u.role != role:
             u.role = role; changed = True
         if changed:
-            db.add(u); db.commit()
-            print(f"[SEED] updated user #{user_id}: {name} ({role})")
+            s.add(u); s.commit(); s.refresh(u)
+            print(f"[SEED] updated user #{id_}: {name} ({role.value})")
     return u
 
-def ensure_students(db: Session, names_with_addrs: list[tuple[str,str]]) -> list[Student]:
-    out = []
-    for nm, addr in names_with_addrs:
-        s = db.query(Student).filter(Student.name == nm).first()
-        if not s:
-            s = Student(name=nm)
-            db.add(s); db.commit(); db.refresh(s)
-            out.append(s)
-        else:
-            out.append(s)
-    return out
+def ensure_student(s, name: str, address: str) -> Student:
+    st = s.query(Student).filter_by(name=name).first()
+    if not st:
+        st = Student(name=name, student_class="10A", address=address)
+        s.add(st); s.commit(); s.refresh(st)
+    return st
 
-# ------------------------ seed datasets ------------------------
+LONDON_ADDRS = [
+    "221B Baker St, London", "10 Downing St, London", "Trafalgar Square, London",
+    "1 Canada Square, London", "30 St Mary Axe, London", "Buckingham Palace, London",
+    "Tower Bridge, London", "King's Cross Station, London", "Royal Albert Hall, London",
+    "Abbey Road, London",
+]
 
-def seed_minimal(db: Session, admin: User, u1: User, u2: User):
-    """Small, clean demo: 4 students, 4 tasks (2→Ulf, 1→Una, 1 New)."""
-    s_names = [
-        ("Oliver Smith", LONDON_ADDR[0]),
-        ("Amelia Johnson", LONDON_ADDR[1]),
-        ("Jack Williams", LONDON_ADDR[2]),
-        ("Isla Brown", LONDON_ADDR[3]),
+NAMES = [
+    "Oliver Smith","Amelia Johnson","Jack Williams","Isla Brown","Harry Jones",
+    "Emily Davis","George Miller","Sophie Taylor","Noah Wilson","Mia Moore",
+    "Thomas Anderson","Ava Thompson","Leo White","Grace Harris","Oscar Martin",
+    "Ella Clark","Lucas Lewis","Lily Walker","James Hall","Freya Allen",
+    "Daniel Young","Ruby King","Max Scott","Ivy Green","Aaron Baker",
+    "Nora Adams","Theo Turner","Chloe Parker","Hugo Evans","Emma Collins",
+]
+
+def due_in(hours: int) -> datetime:
+    return NOW + timedelta(hours=hours)
+
+def mk_task(st: Student, assignee_id: Optional[int], status: TaskStatus) -> Task:
+    t = Task(
+        student_id=st.id,
+        title=f"Visit: {st.name}",
+        address=st.address,
+        body="Auto-generated task",
+        due_at=due_in(randint(2, 72)),
+        assignee_user_id=assignee_id,
+        status=status,
+        checklist=[{"text":"Knock door","done":False},{"text":"Add note","done":False}],
+        external_ref=None,
+        created_by=1,
+    )
+    if status == TaskStatus.DONE:
+        t.completed_at = NOW
+    return t
+
+# --------------- seeds -------------------
+
+def seed_minimal(s, admin: User, ulf: User, una: User):
+    s1 = ensure_student(s, "Oliver Smith", LONDON_ADDRS[0])
+    s2 = ensure_student(s, "Amelia Johnson", LONDON_ADDRS[1])
+    s3 = ensure_student(s, "Jack Williams", LONDON_ADDRS[2])
+    s4 = ensure_student(s, "Isla Brown", LONDON_ADDRS[3])
+
+    tasks = [
+        Task(student_id=s1.id, title="Home visit: Oliver Smith", address=s1.address,
+             body="Check plan", checklist=[{"text":"Knock door","done":False}],
+             due_at=due_in(6), status=TaskStatus.ASSIGNED, assignee_user_id=ulf.id, created_by=admin.id),
+        Task(student_id=s2.id, title="Phone call: Amelia Johnson", address=s2.address,
+             body="Follow up", checklist=[{"text":"Call guardian","done":False}],
+             due_at=due_in(8), status=TaskStatus.ASSIGNED, assignee_user_id=ulf.id, created_by=admin.id),
+        Task(student_id=s3.id, title="Home visit: Jack Williams", address=s3.address,
+             body="Collect form", checklist=[{"text":"Bring pack","done":False}],
+             due_at=due_in(10), status=TaskStatus.ASSIGNED, assignee_user_id=una.id, created_by=admin.id),
+        Task(student_id=s4.id, title="Parent meeting: Isla Brown", address=s4.address,
+             body="Behaviour plan", checklist=[],
+             due_at=due_in(12), status=TaskStatus.NEW, assignee_user_id=None, created_by=admin.id),
     ]
-    studs = ensure_students(db, s_names)
+    s.add_all(tasks); s.commit()
+    print(f"[SEED] minimal: students=4, tasks=4")
 
-    # tasks
-    t1 = Task(
-        student_id=studs[0].id,
-        title="Home visit: Oliver Smith",
-        body="Check action plan",
-        address=s_names[0][1],
-        checklist=[{"text": "Knock door", "done": False}],
-        due_at=today_at(9),
-        assignee_user_id=u1.id,
-        status="Assigned",
-        created_by=admin.id,
-    )
-    t2 = Task(
-        student_id=studs[1].id,
-        title="Phone call: Amelia Johnson",
-        body="Follow up attendance",
-        address=s_names[1][1],
-        checklist=[{"text": "Call guardian", "done": False}],
-        due_at=today_at(10),
-        assignee_user_id=u1.id,
-        status="Assigned",
-        created_by=admin.id,
-    )
-    t3 = Task(
-        student_id=studs[2].id,
-        title="Home visit: Jack Williams",
-        body="Collect signed form",
-        address=s_names[2][1],
-        checklist=[{"text": "Bring pack", "done": False}],
-        due_at=today_at(11),
-        assignee_user_id=u2.id,
-        status="Assigned",
-        created_by=admin.id,
-    )
-    t4 = Task(
-        student_id=studs[3].id,
-        title="Parent meeting: Isla Brown",
-        body="Behavior plan intro",
-        address=s_names[3][1],
-        checklist=[],
-        due_at=today_at(12),
-        assignee_user_id=None,
-        status="New",
-        created_by=admin.id,
-    )
-    db.add_all([t1, t2, t3, t4]); db.commit()
+def seed_big(s, admin: User, ulf: User, una: User, students: int = 60, tasks_per_student: int = 2):
+    # ensure N students
+    pool = (NAMES * ((students // len(NAMES)) + 1))[:students]
+    studs: List[Student] = [ensure_student(s, nm, choice(LONDON_ADDRS)) for nm in pool]
 
-    # minimal history & comments
-    for s in studs:
-        db.add(StudentHistory(student_id=s.id, type="absence", note="Auto sample", created_at=now_utc() - timedelta(days=random.randint(1,7))))
-    db.commit()
+    created = 0
+    assignees = [ulf.id, una.id]
+    for st in studs:
+        existing = s.query(Task).filter(Task.student_id == st.id, Task.deleted_at.is_(None)).count()
+        to_make = max(0, tasks_per_student - existing)
+        for _ in range(to_make):
+            status = choice([TaskStatus.NEW, TaskStatus.ASSIGNED, TaskStatus.DONE, TaskStatus.ASSIGNED])
+            assignee = choice(assignees) if status in (TaskStatus.ASSIGNED, TaskStatus.DONE) else None
+            s.add(mk_task(st, assignee, status)); created += 1
+    if created:
+        s.commit()
+    print(f"[SEED] big: students={len(studs)}, added_tasks=+{created}")
 
-    db.add(TaskComment(task_id=t1.id, author="Paddy", text="Remember photo ID"))
-    db.add(TaskComment(task_id=t2.id, author="Ulf", text="Called parent, no answer"))
-    db.commit()
+# --------------- flows -------------------
 
-    print(f"[SEED] minimal: students={len(studs)}, tasks=4")
-
-def seed_big(db: Session, admin: User, u1: User, u2: User, students: int = 40):
-    studs: list[Student] = []
-    for _ in range(students):
-        s = Student(name=mk_name())
-        db.add(s); studs.append(s)
-    db.commit()
-
-    for s in studs:
-        for _ in range(random.randint(1, 3)):
-            db.add(StudentHistory(student_id=s.id, type=random.choice(["absence","visit"]), note="Auto", created_at=now_utc() - timedelta(days=random.randint(1,14))))
-    db.commit()
-
-    tasks = []
-    for i, s in enumerate(studs):
-        assignee = u1 if i % 2 == 0 else u2
-        status = random.choice(["Assigned", "New", "Assigned", "Assigned"])
-        due = today_at(9 + (i % 6))
-        t = Task(
-            student_id=s.id,
-            title=f"Visit: {s.name}",
-            body="Auto generated check",
-            address=mk_addr(),
-            checklist=[{"text":"Knock door","done":False},{"text":"Add note","done":False}],
-            due_at=due,
-            assignee_user_id=None if status == "New" else assignee.id,
-            status=status,
-            created_by=admin.id,
-        )
-        tasks.append(t)
-    db.add_all(tasks); db.commit()
-    print(f"[SEED] big: students={len(studs)}, tasks={len(tasks)}")
-
-# ------------------------ flows ------------------------
-
-def do_reset_and_seed(big: int | None):
+def do_reset_and_seed(big: int):
     print("[SEED] reset → drop_all + create_all")
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
-    with SessionLocal() as db:
-        admin = ensure_user(db, 1, "Paddy MacGrath", "Admin")
-        u1    = ensure_user(db, 2, "Ulf", "User")
-        u2    = ensure_user(db, 3, "Una", "User")
-        if big and big > 0:
-            seed_big(db, admin, u1, u2, students=big)
+    with SessionLocal() as s:
+        admin = ensure_user(s, 1, "Paddy MacGrath", Role.ADMIN)
+        ulf   = ensure_user(s, 2, "Ulf", Role.USER)
+        una   = ensure_user(s, 3, "Una", Role.USER)
+        if big > 0:
+            seed_big(s, admin, ulf, una, students=big)
         else:
-            seed_minimal(db, admin, u1, u2)
+            seed_minimal(s, admin, ulf, una)
     print("[SEED] reset done.")
 
-def do_ensure(big: int | None):
+def do_ensure(big: int):
     print("[SEED] ensure → create tables if missing; seed if empty")
     Base.metadata.create_all(bind=engine)
-    with SessionLocal() as db:
-        admin = ensure_user(db, 1, "Paddy MacGrath", "Admin")
-        u1    = ensure_user(db, 2, "Ulf", "User")
-        u2    = ensure_user(db, 3, "Una", "User")
+    with SessionLocal() as s:
+        admin = ensure_user(s, 1, "Paddy MacGrath", Role.ADMIN)
+        ulf   = ensure_user(s, 2, "Ulf", Role.USER)
+        una   = ensure_user(s, 3, "Una", Role.USER)
 
-        have_tasks = db.query(Task).count()
-        have_students = db.query(Student).count()
-        if big and big > 0:
-            print("[SEED] big requested → adding data regardless of existing rows")
-            seed_big(db, admin, u1, u2, students=big)
-            return
+        have_students = s.query(Student).count()
+        have_tasks    = s.query(Task).count()
 
-        if have_tasks == 0 and have_students == 0:
-            print("[SEED] empty DB → seed minimal")
-            seed_minimal(db, admin, u1, u2)
+        if big > 0:
+            # always top-up to big demo size
+            seed_big(s, admin, ulf, una, students=big)
+        elif have_students == 0 and have_tasks == 0:
+            seed_minimal(s, admin, ulf, una)
         else:
-            print(f"[SEED] keeping existing data (students={have_students}, tasks={have_tasks})")
+            print(f"[SEED] DB already has data (students={have_students}, tasks={have_tasks}) → leaving as-is")
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--reset", action="store_true", help="Drop & recreate tables, then seed")
-    p.add_argument("--ensure", action="store_true", help="Create tables and minimal data if DB is empty")
-    p.add_argument("--big", type=int, default=0, help="Seed a larger dataset (N students)")
+    p.add_argument("--reset",  action="store_true", help="Drop & recreate tables, then seed")
+    p.add_argument("--ensure", action="store_true", help="Idempotent: create if empty; never delete")
+    p.add_argument("--big",    type=int, default=0,   help="Seed larger demo (N students, default 60 if flag given without value)")
     args = p.parse_args()
 
+    big = args.big if args.big > 0 else 0
+
     if args.reset and args.ensure:
-        print("[SEED] both --reset and --ensure given → using --reset")
+        print("[WARN] both --reset and --ensure passed → using --reset")
         args.ensure = False
 
     if args.reset:
-        do_reset_and_seed(args.big)
-    elif args.ensure or args.big > 0:
-        do_ensure(args.big)
+        do_reset_and_seed(big or 60 if "--big" in __import__("sys").argv else 0)
+    elif args.ensure:
+        do_ensure(big or 60 if "--big" in __import__("sys").argv else 0)
     else:
+        # default behaviour when run without flags: ensure minimal
         do_ensure(0)
 
     print("[SEED] complete.")
