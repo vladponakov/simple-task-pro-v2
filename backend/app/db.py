@@ -1,25 +1,18 @@
 # backend/app/db.py
+# ================================================================
+# BLOCK: DB
+# Purpose: use ONE shared Base (from models) so create_all sees all tables
+# ================================================================
 import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
-from pathlib import Path
+from sqlalchemy.orm import sessionmaker
+from .models import Base  # <- IMPORTANT: import Base from models.py
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = PROJECT_ROOT / "app.db"
+DB_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
+connect_args = {"check_same_thread": False} if DB_URL.startswith("sqlite") else {}
 
-# NEW: les fra env, fall tilbake til lokal fil
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH.as_posix()}")
-
-connect_args = {}
-if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
-    connect_args = {"check_same_thread": False}
-
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args=connect_args,
-)
+engine = create_engine(DB_URL, echo=False, future=True, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
 
 def get_db():
     db = SessionLocal()
@@ -27,4 +20,3 @@ def get_db():
         yield db
     finally:
         db.close()
-
