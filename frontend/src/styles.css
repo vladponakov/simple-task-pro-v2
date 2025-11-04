@@ -239,3 +239,123 @@ body {
   .app-header { padding:8px; }
   .tabs { top:48px; }
 }
+
+/* --- Compact search bar --- */
+.stp-searchbar { width: 100%; }
+.stp-searchbar__input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+/* --- Swipe hint (user default: Reject ◀ / ▶ DONE) --- */
+.task::before,
+.task::after{
+  content: "";
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: .08;
+  font-weight: 800;
+  pointer-events: none;
+}
+.task::before{
+  content: "Reject ◀";
+  left: 10px;
+  color: #b91c1c;
+}
+.task::after{
+  content: "▶ DONE";
+  right: 10px;
+  color: #16a34a;
+}
+
+/* --- Admin-specific swipe hint: show "Delete" instead of "Reject" --- */
+.is-admin .task::before{
+  content: "Delete ◀";
+  color: #b91c1c;
+}
+
+/* --- Penere New Task-knapp høyre for Board (admin) --- */
+.tabs { align-items: center; } /* juster gridens vertikal-align for bedre linjehøyde */
+.tabs-right .tab.link {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-weight: 700;
+  background: #fff;
+}
+.tabs-right .tab.link:hover { background: #f8fafc; }
+
+/* --- Modern drawer menu buttons --- */
+.mitem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  background: #fffffff2;
+  padding: 12px 12px;
+  border-radius: 14px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: transform .08s ease, background .15s ease, box-shadow .15s ease;
+  box-shadow: 0 2px 8px rgba(2,6,23,.06);
+}
+.mitem:hover { background:#fff; transform: translateY(-1px); box-shadow: 0 8px 18px rgba(2,6,23,.08); }
+.mitem:active { transform: translateY(0); box-shadow: 0 2px 8px rgba(2,6,23,.06); }
+
+.mitem--action { border-color:#dbeafe; background:#eff6ff; }
+.mitem--action:hover { background:#e0efff; }
+.mitem--danger { color:#b91c1c; background:#fff; border-color:#fecaca; }
+.mitem--danger:hover { background:#fff1f2; }
+
+/* --- Tabs: nicer right-side "New task" button (admin) --- */
+.tabs { align-items: center; }
+.tabs-right .tab.link {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-weight: 700;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(2,6,23,.06);
+}
+.tabs-right .tab.link:hover { background: #f8fafc; }
+
+/* --- Compact search bar (if not already added) --- */
+.stp-searchbar { width: 100%; }
+.stp-searchbar__input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+/* --- Swipe hints (default = user: Reject ◀ / admin override below) --- */
+.task::before,
+.task::after{
+  content: "";
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: .08;
+  font-weight: 800;
+  pointer-events: none;
+}
+.task::before{
+  content: "Reject ◀";
+  left: 10px;
+  color: #b91c1c;
+}
+.task::after{
+  content: "▶ DONE";
+  right: 10px;
+  color: #16a34a;
+}
+/* admin = delete */
+.is-admin .task::before{
+  content: "Delete ◀";
+  color: #b91c1c;
+}
