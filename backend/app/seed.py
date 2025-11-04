@@ -1,4 +1,4 @@
-# backend/app/seed.py
+# app/seed.py
 from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta, timezone
@@ -6,39 +6,43 @@ from random import choice, randint
 from typing import Optional, List
 
 from app.db import Base, engine, SessionLocal
-from app.models import User, Student, Task  # 👈 no Role/TaskStatus import
+from app.models import User, Student, Task, Role  # NOTE: Role is an enum in models, or replace with strings if needed
 
 UTC = timezone.utc
 NOW = datetime.now(UTC)
 
 # ---------------- helpers ----------------
 
-def ensure_user(s, id_: int, name: str, role_value: str) -> User:
-    """
-    Create/update a user with a simple string role: 'Admin' or 'User'.
-    Works with models that store role as String.
-    """
+def ensure_user(s, id_: int, name: str, role: Role) -> User:
     u: Optional[User] = s.get(User, id_)
     if not u:
-        u = User(id=id_, name=name, role=role_value)
+        # role may be an Enum or a string depending on models.py — both work since User.role is a String column
+        u = User(id=id_, name=name, role=(role.value if hasattr(role, "value") else role))
         s.add(u); s.commit(); s.refresh(u)
-        print(f"[SEED] created user #{id_}: {name} ({role_value})")
+        print(f"[SEED] created user #{id_}: {name} ({(role.value if hasattr(role, 'value') else role)})")
     else:
         changed = False
-        if getattr(u, "name", None) != name:
+        if u.name != name:
             u.name = name; changed = True
-        # tolerate schemas where 'role' column might be named differently
-        if hasattr(u, "role") and getattr(u, "role") != role_value:
-            u.role = role_value; changed = True
+        # normalize enum/string comparison
+        new_role = (role.value if hasattr(role, "value") else role)
+        if u.role != new_role:
+            u.role = new_role; changed = True
         if changed:
             s.add(u); s.commit(); s.refresh(u)
-            print(f"[SEED] updated user #{id_}: {name} ({role_value})")
+            print(f"[SEED] updated user #{id_}: {name} ({new_role})")
     return u
 
 def ensure_student(s, name: str, address: str) -> Student:
     st = s.query(Student).filter_by(name=name).first()
     if not st:
-        st = Student(name=name, student_class="10A", address=address)
+        # Create with only known-safe kwargs
+        st = Student(name=name)
+        # Set optional attributes if the model has them
+        if hasattr(st, "student_class"):
+            setattr(st, "student_class", "10A")
+        if hasattr(st, "address"):
+            setattr(st, "address", address)
         s.add(st); s.commit(); s.refresh(st)
     return st
 
@@ -61,15 +65,21 @@ NAMES = [
 def due_in(hours: int):
     return NOW + timedelta(hours=hours)
 
+def _student_address_or_fallback(st: Student) -> str:
+    # Use Student.address if present, otherwise a random fallback
+    if hasattr(st, "address") and getattr(st, "address") is not None:
+        return getattr(st, "address")
+    return choice(LONDON_ADDRS)
+
 def mk_task(st: Student, assignee_id: Optional[int], status_str: str) -> Task:
     t = Task(
         student_id=st.id,
         title=f"Visit: {st.name}",
-        address=st.address,
+        address=_student_address_or_fallback(st),
         body="Auto-generated task",
         due_at=due_in(randint(2, 72)),
         assignee_user_id=assignee_id,
-        status=status_str,  # 'New' | 'Assigned' | 'Done'
+        status=status_str,  # plain string
         checklist=[{"text":"Knock door","done":False},{"text":"Add note","done":False}],
         external_ref=None,
         created_by=1,
@@ -87,16 +97,23 @@ def seed_minimal(s, admin: User, ulf: User, una: User):
     s4 = ensure_student(s, "Isla Brown",    LONDON_ADDRS[3])
 
     tasks = [
-        Task(student_id=s1.id, title="Home visit: Oliver Smith", address=s1.address,
+        Task(student_id=s1.id, title="Home visit: Oliver Smith",
+             address=_student_address_or_fallback(s1),
              body="Check plan", checklist=[{"text":"Knock door","done":False}],
              due_at=due_in(6), status="Assigned", assignee_user_id=ulf.id, created_by=admin.id),
-        Task(student_id=s2.id, title="Phone call: Amelia Johnson", address=s2.address,
+
+        Task(student_id=s2.id, title="Phone call: Amelia Johnson",
+             address=_student_address_or_fallback(s2),
              body="Follow up", checklist=[{"text":"Call guardian","done":False}],
              due_at=due_in(8), status="Assigned", assignee_user_id=ulf.id, created_by=admin.id),
-        Task(student_id=s3.id, title="Home visit: Jack Williams", address=s3.address,
+
+        Task(student_id=s3.id, title="Home visit: Jack Williams",
+             address=_student_address_or_fallback(s3),
              body="Collect form", checklist=[{"text":"Bring pack","done":False}],
              due_at=due_in(10), status="Assigned", assignee_user_id=una.id, created_by=admin.id),
-        Task(student_id=s4.id, title="Parent meeting: Isla Brown", address=s4.address,
+
+        Task(student_id=s4.id, title="Parent meeting: Isla Brown",
+             address=_student_address_or_fallback(s4),
              body="Behaviour plan", checklist=[],
              due_at=due_in(12), status="New", assignee_user_id=None, created_by=admin.id),
     ]
@@ -127,9 +144,9 @@ def do_reset_and_seed(big: int):
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as s:
-        admin = ensure_user(s, 1, "Paddy MacGrath", "Admin")
-        ulf   = ensure_user(s, 2, "Ulf", "User")
-        una   = ensure_user(s, 3, "Una", "User")
+        admin = ensure_user(s, 1, "Paddy MacGrath", Role.ADMIN)
+        ulf   = ensure_user(s, 2, "Ulf", Role.USER)
+        una   = ensure_user(s, 3, "Una", Role.USER)
         if big > 0:
             seed_big(s, admin, ulf, una, students=big)
         else:
@@ -140,9 +157,9 @@ def do_ensure(big: int):
     print("[SEED] ensure → create tables if missing; seed if empty")
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as s:
-        admin = ensure_user(s, 1, "Paddy MacGrath", "Admin")
-        ulf   = ensure_user(s, 2, "Ulf", "User")
-        una   = ensure_user(s, 3, "Una", "User")
+        admin = ensure_user(s, 1, "Paddy MacGrath", Role.ADMIN)
+        ulf   = ensure_user(s, 2, "Ulf", Role.USER)
+        una   = ensure_user(s, 3, "Una", Role.USER)
 
         have_students = s.query(Student).count()
         have_tasks    = s.query(Task).count()
@@ -162,7 +179,7 @@ def main():
     p.add_argument("--big",    type=int, default=0,   help="Seed larger demo (N students, e.g. 60)")
     args = p.parse_args()
 
-    # if flag --big is present but 0, default to 60
+    # if flag --big given without value, default to 60
     big = args.big if args.big > 0 else (60 if "--big" in sys.argv else 0)
 
     if args.reset and args.ensure:
