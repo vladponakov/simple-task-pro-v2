@@ -1,30 +1,33 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-# Bruk KONSISTENTE imports (velg app.* eller relative - her bruker vi app.*)
 from app.db import Base, engine, get_db
 from app.config import settings
 from app.models import (
     Task, TaskStatus, TaskEventType, User, Student, Absence, Role, Comment
 )
-from app.schemas import (UserOut, 
-    TaskIn, TaskOut, TaskEdit, AssignIn, StatusIn, TaskEventOut,
-    AbsenceIn, AbsenceOut, StudentIn, StudentOut, HistoryItem, UserOut,
+from app.schemas import (
+    UserOut, TaskIn, TaskOut, TaskEdit, AssignIn, StatusIn, TaskEventOut,
+    AbsenceIn, AbsenceOut, StudentIn, StudentOut, HistoryItem,
     CommentCreate, CommentOut
 )
 from app.deps import get_current_user, require_admin
 from app.utils import log_event, soft_delete, restore
 
-# --- App + CORS --------------------------------------------------------------
+# -------------------- App + CORS --------------------
 
-# Håndter at CORS_ORIGINS kan være enten liste eller komma-separert streng
+# CORS_ORIGINS may be a list or a comma-separated string in settings
 if isinstance(settings.CORS_ORIGINS, str):
     _origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 else:
@@ -34,18 +37,34 @@ app = FastAPI(title="Simple Task Pro API v2")
 
 app.add_middleware(
     CORSMiddleware,
+    # Same-origin in production (no CORS). Allow localhost for dev:
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,          # OK even if you don't use cookies
-    allow_methods=["*"],             # includes PATCH, POST, DELETE, OPTIONS
-    allow_headers=["*"],             # includes custom "X-User" header
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Valgfritt: flytt table-creation til startup i stedet for import-tid
+# where the built frontend is copied by Render's build step
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+
+# Serve hashed assets like /assets/index-XXXX.js and .css
+assets_dir = os.path.join(static_dir, "assets")
+if os.path.isdir(assets_dir):
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+# Avoid caching index.html so the latest UI is loaded after deploys
+@app.middleware("http")
+async def no_cache_index(request: Request, call_next):
+    resp: Response = await call_next(request)
+    if request.url.path in ("/", "/index.html"):
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
 
-# --- Health / Me -------------------------------------------------------------
+# -------------------- Health / Me --------------------
 
 @app.get("/health")
 @app.get("/api/health")
@@ -56,7 +75,7 @@ def health():
 def me(user: User = Depends(get_current_user)):
     return user
 
-# --- Comments ---------------------------------------------------------------
+# -------------------- Comments --------------------
 
 @app.get("/api/tasks/{task_id}/comments", response_model=List[CommentOut])
 def list_comments(task_id: int, db: Session = Depends(get_db)):
@@ -83,7 +102,7 @@ def add_comment(task_id: int, body: CommentCreate, db: Session = Depends(get_db)
     db.refresh(c)
     return c
 
-# --- Students ---------------------------------------------------------------
+# -------------------- Students --------------------
 
 @app.post("/api/students", response_model=StudentOut, dependencies=[Depends(require_admin)])
 def create_student(data: StudentIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -129,7 +148,7 @@ def student_history(student_id: int, days: int = 90, db: Session = Depends(get_d
     items.sort(key=lambda x: x.date, reverse=True)
     return items
 
-# --- Absences ---------------------------------------------------------------
+# -------------------- Absences --------------------
 
 @app.post("/api/absences", response_model=AbsenceOut)
 def create_absence(data: AbsenceIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -145,7 +164,7 @@ def create_absence(data: AbsenceIn, db: Session = Depends(get_db), user: User = 
     db.refresh(a)
     return a
 
-# --- Tasks ------------------------------------------------------------------
+# -------------------- Tasks --------------------
 
 @app.post("/api/tasks", response_model=TaskOut, dependencies=[Depends(require_admin)])
 def create_task(data: TaskIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -157,7 +176,14 @@ def create_task(data: TaskIn, db: Session = Depends(get_db), user: User = Depend
     return t
 
 @app.get("/api/tasks", response_model=List[TaskOut])
-def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_user), status: Optional[TaskStatus] = None, scope: Optional[str] = None, sort: Optional[str] = None, order: Optional[str] = None):
+def list_tasks(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    status: Optional[TaskStatus] = None,
+    scope: Optional[str] = None,
+    sort: Optional[str] = None,
+    order: Optional[str] = None
+):
     q = db.query(Task).filter(Task.deleted_at.is_(None))
     if status:
         q = q.filter(Task.status == status)
@@ -167,7 +193,7 @@ def list_tasks(db: Session = Depends(get_db), user: User = Depends(get_current_u
     # Sorting
     sort = (sort or 'due_at').lower()
     order = (order or 'asc').lower()
-    allowed = {'due_at','updated_at','completed_at'}
+    allowed = {'due_at', 'updated_at', 'completed_at'}
     if sort not in allowed:
         sort = 'due_at'
     col = getattr(Task, sort)
@@ -186,17 +212,16 @@ def get_task(task_id: int, db: Session = Depends(get_db), user: User = Depends(g
         raise HTTPException(status_code=403, detail="Forbidden")
     return t
 
-# Viktig: bare ÉN PATCH /api/tasks/{task_id} (unngå konflikt)
+# Single edit endpoint for tasks
 @app.patch("/api/tasks/{task_id}", response_model=TaskOut)
 def edit_task(task_id: int, data: TaskEdit, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     t = db.query(Task).filter(Task.id == task_id, Task.deleted_at.is_(None)).first()
     if not t:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    # Role-aware whitelist: Admin may edit all; Assignee may edit safe fields only
     payload = data.model_dump(exclude_unset=True)
 
-    # --- NEW: Unify 'reason' -> 'body' so both Edit Reason and Reject reason share same field
+    # Unify "reason" -> "body" so Edit Reason and Reject Reason share the same field
     if "reason" in payload and "body" not in payload:
         payload["body"] = payload.pop("reason")
 
@@ -207,6 +232,7 @@ def edit_task(task_id: int, data: TaskEdit, db: Session = Depends(get_db), user:
         disallowed = set(payload.keys()) - allowed
         if disallowed:
             raise HTTPException(status_code=403, detail=f"Fields not allowed for user: {sorted(disallowed)}")
+
     changed = {}
     for k, v in payload.items():
         setattr(t, k, v)
@@ -267,7 +293,7 @@ def change_status(task_id: int, data: StatusIn, db: Session = Depends(get_db), u
         if not data.reason:
             raise HTTPException(status_code=400, detail="Reason required for reject")
         t.status = TaskStatus.REJECTED
-        t.body = (data.reason or "").strip()  # --- NEW: persist reason into Task.body
+        t.body = (data.reason or "").strip()  # store reason in Task.body
         log_event(db, t, user, TaskEventType.REJECT, {"reason": data.reason, "at": now_iso})
     elif action == "complete":
         t.status = TaskStatus.DONE
@@ -298,3 +324,16 @@ def task_events(task_id: int, db: Session = Depends(get_db), user: User = Depend
     ).mappings().all()
 
     return [TaskEventOut(**dict(r)) for r in rows]
+
+# -------------------- SPA fallback (last) --------------------
+
+@app.head("/")
+def head_root():
+    return Response(status_code=200)
+
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str, request: Request):
+    # Let mounted routes (/assets, /api, docs) take priority; this is last resort.
+    if os.path.isdir(static_dir):
+        return FileResponse(os.path.join(static_dir, "index.html"))
+    raise HTTPException(status_code=404)

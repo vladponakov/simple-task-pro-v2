@@ -3,13 +3,20 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 /* ------------------------------------------------------------------ */
-/* API                                                                */
+/* API (prod = same-origin; dev = VITE_API_BASE or localhost)         */
 /* ------------------------------------------------------------------ */
-const API = (path, opts = {}) =>
-  fetch(`http://localhost:8000${path}`, {
+const isProd =
+  typeof window !== "undefined" && !window.location.origin.includes("localhost");
+const API_BASE = isProd ? "" : (import.meta.env?.VITE_API_BASE ?? "http://localhost:8000");
+
+const API = (path, opts = {}) => {
+  // Always prefix /api to be safe (supports callers that pass "tasks" or "/api/tasks")
+  const p = path.startsWith("/api") ? path : `/api${path.startsWith("/") ? "" : "/"}${path}`;
+  return fetch(`${API_BASE}${p}`, {
     headers: {
       "X-User": localStorage.getItem("user") || "paddy",
       "Content-Type": "application/json",
+      ...(opts.headers || {}),
     },
     cache: "no-store",
     ...opts,
@@ -23,6 +30,7 @@ const API = (path, opts = {}) =>
     }
     return r.json();
   });
+};
 
 /* ------------------------------------------------------------------ */
 /* Utils                                                              */
@@ -550,10 +558,8 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
   const deleteTask = async () => {
     if (!confirm("Delete this task?")) return;
     try {
-      await fetch(`http://localhost:8000/api/tasks/${task.id}`, {
-        method: "DELETE",
-        headers: { "X-User": localStorage.getItem("user") || "paddy" },
-      });
+      await API(`/api/tasks/${task.id}`, { method: "DELETE" });
+
       await onSaved();
       onClose();
     } catch (e) {

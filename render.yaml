@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: demo-taskpro
+    env: python
+    rootDir: backend
+    plan: free
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:////data/app.db
+    buildCommand: |
+      pip install -r requirements.txt
+      cd ../frontend
+      npm ci
+      npm run build
+      cd ../backend
+      mkdir -p app/static
+      rm -rf app/static/*
+      cp -r ../frontend/dist/* app/static/
+    preDeployCommand: |
+      mkdir -p /data/tasks_feed
+      test -f /data/tasks_feed/tasks.csv || echo "student_id,title,address,due_at,assignee_user_id,status,reason" > /data/tasks_feed/tasks.csv
+      python -m app.seed --ensure
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
