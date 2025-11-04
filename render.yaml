@@ -11,6 +11,8 @@ services:
     envVars:
       - key: DATABASE_URL
         value: sqlite:////data/app.db
+      - key: VITE_API_BASE
+        value: https://demo-taskpro.onrender.com
     buildCommand: |
       pip install -r requirements.txt
       cd ../frontend
@@ -21,7 +23,6 @@ services:
       rm -rf app/static/*
       cp -r ../frontend/dist/* app/static/
     preDeployCommand: |
-      mkdir -p /data/tasks_feed
-      test -f /data/tasks_feed/tasks.csv || echo "student_id,title,address,due_at,assignee_user_id,status,reason" > /data/tasks_feed/tasks.csv
       python -m app.seed --ensure
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+

@@ -354,7 +354,7 @@ body {
   right: 10px;
   color: #16a34a;
 }
-/* admin = delete */
+/* admin have delete */
 .is-admin .task::before{
   content: "Delete ◀";
   color: #b91c1c;
