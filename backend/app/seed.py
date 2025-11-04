@@ -6,39 +6,40 @@ from random import choice, randint
 from typing import Optional, List
 
 from app.db import Base, engine, SessionLocal
-from app.models import User, Student, Task, Role  # NOTE: Role is an enum in models, or replace with strings if needed
+from app.models import User, Student, Task, Role  # Role is an Enum; DB stores strings
 
 UTC = timezone.utc
 NOW = datetime.now(UTC)
 
 # ---------------- helpers ----------------
 
+def _as_str_role(role_or_str) -> str:
+    """Normalize enum/string to plain string for storage/prints."""
+    return getattr(role_or_str, "value", role_or_str)
+
 def ensure_user(s, id_: int, name: str, role: Role) -> User:
     u: Optional[User] = s.get(User, id_)
+    role_str = _as_str_role(role)
     if not u:
-        # role may be an Enum or a string depending on models.py — both work since User.role is a String column
-        u = User(id=id_, name=name, role=(role.value if hasattr(role, "value") else role))
+        u = User(id=id_, name=name, role=role_str)
         s.add(u); s.commit(); s.refresh(u)
-        print(f"[SEED] created user #{id_}: {name} ({(role.value if hasattr(role, 'value') else role)})")
+        print(f"[SEED] created user #{id_}: {name} ({role_str})")
     else:
         changed = False
         if u.name != name:
             u.name = name; changed = True
-        # normalize enum/string comparison
-        new_role = (role.value if hasattr(role, "value") else role)
-        if u.role != new_role:
-            u.role = new_role; changed = True
+        if u.role != role_str:
+            u.role = role_str; changed = True
         if changed:
             s.add(u); s.commit(); s.refresh(u)
-            print(f"[SEED] updated user #{id_}: {name} ({new_role})")
+            print(f"[SEED] updated user #{id_}: {name} ({role_str})")
     return u
 
 def ensure_student(s, name: str, address: str) -> Student:
+    """Create student if missing. Only sets optional attrs if the model has them."""
     st = s.query(Student).filter_by(name=name).first()
     if not st:
-        # Create with only known-safe kwargs
         st = Student(name=name)
-        # Set optional attributes if the model has them
         if hasattr(st, "student_class"):
             setattr(st, "student_class", "10A")
         if hasattr(st, "address"):
@@ -66,8 +67,8 @@ def due_in(hours: int):
     return NOW + timedelta(hours=hours)
 
 def _student_address_or_fallback(st: Student) -> str:
-    # Use Student.address if present, otherwise a random fallback
-    if hasattr(st, "address") and getattr(st, "address") is not None:
+    """Use Student.address if present; otherwise fall back to a random London address."""
+    if hasattr(st, "address") and getattr(st, "address", None):
         return getattr(st, "address")
     return choice(LONDON_ADDRS)
 
@@ -79,7 +80,7 @@ def mk_task(st: Student, assignee_id: Optional[int], status_str: str) -> Task:
         body="Auto-generated task",
         due_at=due_in(randint(2, 72)),
         assignee_user_id=assignee_id,
-        status=status_str,  # plain string
+        status=status_str,  # plain string: "New" | "Assigned" | "Done"
         checklist=[{"text":"Knock door","done":False},{"text":"Add note","done":False}],
         external_ref=None,
         created_by=1,
