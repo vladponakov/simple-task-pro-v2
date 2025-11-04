@@ -20,6 +20,9 @@ try:
 except Exception:
     httpx = None
 
+import logging
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL")  # optional push target
 
@@ -31,7 +34,8 @@ def get_db():
         db.close()
 
 def _to_out(t: Task) -> TaskOut:
-    return TaskOut.model_construct(**{
+    # Validate into the Pydantic schema (converts list[dict] -> list[ChecklistItem])
+    return TaskOut.model_validate({
         "id": t.id,
         "student_id": t.student_id,
         "title": t.title,
@@ -162,6 +166,8 @@ def list_comments(task_id: int, db: Session = Depends(get_db)):
           .all()
     )
     return rows
+
+
 
 @router.post("/{task_id}/comments", response_model=CommentOut)
 def add_comment(task_id: int, payload: CommentCreate, db: Session = Depends(get_db)):
