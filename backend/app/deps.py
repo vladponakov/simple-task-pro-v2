@@ -59,6 +59,13 @@ def require_api_token(token: str | None = Depends(_bearer)) -> str:
     raise HTTPException(status_code=401, detail="Invalid or missing API token")
 
 
+def get_api_token(token: str | None = Depends(_bearer)) -> str:
+    """
+    Backwards-compatible alias for old name used in main.py.
+    """
+    return require_api_token(token)
+
+
 def get_admin_user(db: Session = Depends(get_db)) -> User:
     """Bruk Admin (id=1) som 'actor' for ingest-endpoints."""
     user = db.query(User).filter(User.id == 1).first()

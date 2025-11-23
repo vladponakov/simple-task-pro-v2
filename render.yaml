@@ -1,27 +1,63 @@
 services:
   - type: web
-    name: demo-taskpro
+    name: simple-task-pro-v2-demo
     env: python
-    rootDir: backend
     plan: free
+
+    # Projekt-roten (der backend/ og frontend/ ligger)
+    rootDir: .
+
+    buildCommand: |
+      set -o errexit
+
+      # 1) Backend – installer Python-avhengigheter
+      cd backend
+      pip install -r requirements.txt
+
+      # 2) Frontend – bygg Vite-app
+      cd ../frontend
+      npm ci
+      npm run build
+
+      # 3) Kopier bygget frontend til backend/app/static
+      rm -rf ../backend/app/static
+      mkdir -p ../backend/app/static
+      cp -r dist/* ../backend/app/static/
+
+    # Kjør backend-API + serverer static frontend
+    startCommand: |
+      cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+
+    # Kjøres før hver deploy – fyller inn demo-data hvis tom DB
+    preDeployCommand: |
+      cd backend
+      python -m app.seed
+
+    envVars:
+      # SQLite på persistent disk
+      - key: DATABASE_URL
+        value: sqlite:////data/app.db
+
+      # CORS – åpent for demo, kan strammes inn senere
+      - key: CORS_ORIGINS
+        value: "*"
+
+      # Batch-API-beskyttelse for Make.com (brukes i X-API-Token)
+      - key: API_TOKEN
+        sync: false          # sett verdi i Render UI
+
+      - key: REQUIRE_API_TOKEN
+        value: "true"
+
+      # Webhook for DONE-tasks → Make.com
+      - key: MAKE_WEBHOOK_URL
+        sync: false          # sett til din hook.eu2.make.com/.... i Render UI
+
+      - key: MAKE_WEBHOOK_API_KEY
+        sync: false          # sett til x-make-apikey i Render UI
+
+    # Persistent disk til /data (for app.db)
     disk:
       name: data
       mountPath: /data
       sizeGB: 1
-    envVars:
-      - key: DATABASE_URL
-        value: sqlite:////data/app.db
-    buildCommand: |
-      pip install -r requirements.txt
-      cd ../frontend
-      npm ci
-      npm run build
-      cd ../backend
-      mkdir -p app/static
-      rm -rf app/static/*
-      cp -r ../frontend/dist/* app/static/
-    preDeployCommand: |
-      mkdir -p /data/tasks_feed
-      test -f /data/tasks_feed/tasks.csv || echo "student_id,title,address,due_at,assignee_user_id,status,reason" > /data/tasks_feed/tasks.csv
-      python -m app.seed --ensure
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT

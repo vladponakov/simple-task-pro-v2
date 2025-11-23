@@ -1,291 +1,170 @@
-# app/seed.py
 from __future__ import annotations
 
-import argparse
-import os
-import random
-from datetime import date, datetime, timedelta, timezone
-from typing import List, Tuple
+from datetime import datetime, timedelta, date
 
 from sqlalchemy.orm import Session
 
 from app.db import Base, engine, SessionLocal
 from app.models import (
-    User, Role, Student, Absence, Task, TaskStatus, TaskEventType
+    Absence,
+    Role,
+    Student,
+    Task,
+    TaskStatus,
+    TaskEventType,
+    User,
 )
-from app.utils import log_event
+from app.utils import hash_password, log_event
+from app.config import settings
 
-# ---------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------
-
-TODAY = date.today()
-# Use timezone-aware now, then strip tzinfo so DB stays naive (matches existing schema)
-NOW = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0, tzinfo=None)
-
-LONDON_ADDR = [
-    "221B Baker St, London",
-    "10 Downing St, London",
-    "Trafalgar Square, London",
-    "1 Canada Square, London",
-    "30 St Mary Axe, London",
-    "Buckingham Palace, London",
-    "Tower Bridge, London",
-    "King's Cross Station, London",
-    "Royal Albert Hall, London",
-    "Piccadilly Circus, London",
-    "Covent Garden, London",
-    "Canary Wharf, London",
+# -------------------------------------------------------------------
+#  Raw data from your Excel sheet, converted once into Python.
+#  (Year is stored in student_class, first+last -> name)
+# -------------------------------------------------------------------
+STUDENT_ROWS = [
+    {'year': 11, 'first_name': 'Masooma', 'last_name': 'Abbas', 'gender': 'F', 'address': 'Flat 13, Dodsley Place 289 Montagu Road, London, N9 0HU', 'contact_name': 'Abbas', 'contact_relationship': 'Mother', 'contact_phone': '07700 900001', 'absent_today': True, 'attendance_ytd': 94.0, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 94.74, 'attendance_last_3_weeks': 79.31, 'attendance_last_4_weeks': 84.62},
+    {'year': 11, 'first_name': 'Zahara', 'last_name': 'Abbott', 'gender': 'F', 'address': '64 Richmond Crescent, Edmonton, London, N9 7QJ', 'contact_name': 'Abbott', 'contact_relationship': 'Mother', 'contact_phone': '07700 900002', 'absent_today': True, 'attendance_ytd': 92.0, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 84.21, 'attendance_last_3_weeks': 89.66, 'attendance_last_4_weeks': 87.18},
+    {'year': 11, 'first_name': 'Savt', 'last_name': 'Abejuro', 'gender': 'M', 'address': '11 Tramway Avenue, London, N9 8PD', 'contact_name': 'Abejuro', 'contact_relationship': 'Mother', 'contact_phone': '07700 900003', 'absent_today': True, 'attendance_ytd': 75.0, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 80.0, 'attendance_last_3_weeks': 80.0, 'attendance_last_4_weeks': 75.0},
+    {'year': 11, 'first_name': 'Laura', 'last_name': 'Abejuro', 'gender': 'M', 'address': '29 Somerset Road, London, N18 1HH', 'contact_name': 'Abejuro', 'contact_relationship': 'Mother', 'contact_phone': '07700 900004', 'absent_today': True, 'attendance_ytd': 43.0, 'attendance_last_week': 40.0, 'attendance_last_2_weeks': 57.89, 'attendance_last_3_weeks': 65.52, 'attendance_last_4_weeks': 69.23},
+    {'year': 11, 'first_name': 'Herman', 'last_name': 'Abejuro', 'gender': 'F', 'address': '71 Folkestone Road, London, N18 2ER', 'contact_name': 'Abejuro', 'contact_relationship': 'Father', 'contact_phone': '07700 900005', 'absent_today': True, 'attendance_ytd': 82.0, 'attendance_last_week': 60.0, 'attendance_last_2_weeks': 73.68, 'attendance_last_3_weeks': 82.76, 'attendance_last_4_weeks': 87.18},
+    {'year': 11, 'first_name': 'Henry', 'last_name': 'Abejurouge', 'gender': 'M', 'address': '57 Hudson Way, London, N9 0XE', 'contact_name': 'Abejurouge', 'contact_relationship': 'Mother', 'contact_phone': '07700 900006', 'absent_today': True, 'attendance_ytd': 93.0, 'attendance_last_week': 90.0, 'attendance_last_2_weeks': 85.0, 'attendance_last_3_weeks': 90.0, 'attendance_last_4_weeks': 92.5},
+    {'year': 11, 'first_name': 'Richard', 'last_name': 'Aberdeen', 'gender': 'F', 'address': '165 Bounces Road, London, N9 8LL', 'contact_name': 'Aberdeen', 'contact_relationship': 'Father', 'contact_phone': '07700 900007', 'absent_today': True, 'attendance_ytd': 100.0, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 94.74, 'attendance_last_3_weeks': 96.55, 'attendance_last_4_weeks': 97.44},
+    {'year': 10, 'first_name': 'Anbigale', 'last_name': 'Ableson', 'gender': 'F', 'address': 'Flat 14, Well House Beaconsfield Road, London, N9 0EB', 'contact_name': 'Ableson', 'contact_relationship': 'Mother', 'contact_phone': '07700 900008', 'absent_today': True, 'attendance_ytd': 70.41, 'attendance_last_week': 0.0, 'attendance_last_2_weeks': 10.0, 'attendance_last_3_weeks': 33.33, 'attendance_last_4_weeks': 50.0},
+    {'year': 10, 'first_name': 'Jenny', 'last_name': 'Acton', 'gender': 'M', 'address': '55 Alexandra Road, Hemel Hempstead, HP2 4AQ', 'contact_name': 'Acton', 'contact_relationship': 'Father', 'contact_phone': '07700 900009', 'absent_today': True, 'attendance_ytd': 83.67, 'attendance_last_week': 80.0, 'attendance_last_2_weeks': 50.0, 'attendance_last_3_weeks': 63.33, 'attendance_last_4_weeks': 70.0},
+    {'year': 9, 'first_name': 'Alander', 'last_name': 'Adam', 'gender': 'F', 'address': '61 St. Alphege Road, London, N9 8BU', 'contact_name': 'Adam', 'contact_relationship': 'Father', 'contact_phone': '07700 900010', 'absent_today': True, 'attendance_ytd': 93.88, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 90.0, 'attendance_last_3_weeks': 93.33, 'attendance_last_4_weeks': 95.0},
+    {'year': 9, 'first_name': 'Stanley', 'last_name': 'Adam', 'gender': 'M', 'address': '140 Bulwer Road, Edmonton, London, N18 1QQ', 'contact_name': 'Adam', 'contact_relationship': 'Father', 'contact_phone': '07700 900011', 'absent_today': True, 'attendance_ytd': 93.88, 'attendance_last_week': 60.0, 'attendance_last_2_weeks': 70.0, 'attendance_last_3_weeks': 80.0, 'attendance_last_4_weeks': 80.0},
+    {'year': 9, 'first_name': 'Mahmood', 'last_name': 'Adnan', 'gender': 'M', 'address': '22 Morley Avenue, Edmonton, London, N18 2QT', 'contact_name': 'Adnan', 'contact_relationship': 'Mother', 'contact_phone': '07700 900012', 'absent_today': True, 'attendance_ytd': 91.84, 'attendance_last_week': 80.0, 'attendance_last_2_weeks': 80.0, 'attendance_last_3_weeks': 86.67, 'attendance_last_4_weeks': 85.0},
+    {'year': 9, 'first_name': 'Oliver', 'last_name': 'Afsal', 'gender': 'M', 'address': '18 Brettenham Road, London, N18 2ET', 'contact_name': 'Afsal', 'contact_relationship': 'Mother', 'contact_phone': '07700 900013', 'absent_today': True, 'attendance_ytd': 29.59, 'attendance_last_week': 0.0, 'attendance_last_2_weeks': 0.0, 'attendance_last_3_weeks': 0.0, 'attendance_last_4_weeks': 0.0},
+    {'year': 9, 'first_name': 'Hosaib', 'last_name': 'Agha', 'gender': 'M', 'address': '45 Gordon Road, Edmonton, London, N9 0LX', 'contact_name': 'Agha', 'contact_relationship': 'Father', 'contact_phone': '07700 900014', 'absent_today': True, 'attendance_ytd': 91.84, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 90.0, 'attendance_last_3_weeks': 93.33, 'attendance_last_4_weeks': 95.0},
+    {'year': 9, 'first_name': 'Hosiab', 'last_name': 'Agha', 'gender': 'F', 'address': '78 Town Road, Edmonton, London, N9 0RG', 'contact_name': 'Agha', 'contact_relationship': 'Mother', 'contact_phone': '07700 900015', 'absent_today': True, 'attendance_ytd': 93.88, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 80.0, 'attendance_last_3_weeks': 86.67, 'attendance_last_4_weeks': 90.0},
+    {'year': 9, 'first_name': 'Shohaib', 'last_name': 'Agha', 'gender': 'M', 'address': 'Flat 1, 395 Montagu Road, London, N9 0HP', 'contact_name': 'Agha', 'contact_relationship': 'Mother', 'contact_phone': '07700 900016', 'absent_today': True, 'attendance_ytd': 85.71, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 60.0, 'attendance_last_3_weeks': 73.33, 'attendance_last_4_weeks': 80.0},
+    {'year': 9, 'first_name': 'Asif', 'last_name': 'Ahaz', 'gender': 'M', 'address': '179 Hertford Road, London, N9 7EP', 'contact_name': 'Ahaz', 'contact_relationship': 'Mother', 'contact_phone': '07700 900017', 'absent_today': True, 'attendance_ytd': 91.84, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 94.74, 'attendance_last_3_weeks': 82.76, 'attendance_last_4_weeks': 82.05},
+    {'year': 9, 'first_name': 'DJ', 'last_name': 'Ahmed', 'gender': 'F', 'address': '179 Hertford Road, London, N9 7EP', 'contact_name': 'Ahmed', 'contact_relationship': 'Mother', 'contact_phone': '07700 900018', 'absent_today': True, 'attendance_ytd': 91.84, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 94.74, 'attendance_last_3_weeks': 82.76, 'attendance_last_4_weeks': 82.05},
+    {'year': 8, 'first_name': 'Wasim', 'last_name': 'Ahmed', 'gender': 'F', 'address': '38 St. Mary\'s Road, London, N9 8NJ', 'contact_name': 'Ahmed', 'contact_relationship': 'Mother', 'contact_phone': '07700 900019', 'absent_today': True, 'attendance_ytd': 100.0, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 90.0, 'attendance_last_3_weeks': 93.33, 'attendance_last_4_weeks': 95.0},
+    {'year': 9, 'first_name': 'Asif', 'last_name': 'Ahmoud', 'gender': 'F', 'address': '391A Fore Street, London, N9 0NR', 'contact_name': 'Ahmoud', 'contact_relationship': 'Mother', 'contact_phone': '07700 900020', 'absent_today': True, 'attendance_ytd': 73.47, 'attendance_last_week': 0.0, 'attendance_last_2_weeks': 0.0, 'attendance_last_3_weeks': 6.67, 'attendance_last_4_weeks': 30.0},
+    {'year': 10, 'first_name': 'Jason', 'last_name': 'Air', 'gender': 'M', 'address': '58 Hennessy Road, London, N9 0XJ', 'contact_name': 'Air', 'contact_relationship': 'Mother', 'contact_phone': '07700 900021', 'absent_today': True, 'attendance_ytd': 36.73, 'attendance_last_week': 0.0, 'attendance_last_2_weeks': 0.0, 'attendance_last_3_weeks': 6.67, 'attendance_last_4_weeks': 25.0},
+    {'year': 10, 'first_name': 'Matthew', 'last_name': 'Alderson', 'gender': 'F', 'address': '27 Oxford Road, London, N9 0LY', 'contact_name': 'Alderson', 'contact_relationship': 'Father', 'contact_phone': '07700 900022', 'absent_today': True, 'attendance_ytd': 95.92, 'attendance_last_week': 80.0, 'attendance_last_2_weeks': 80.0, 'attendance_last_3_weeks': 86.67, 'attendance_last_4_weeks': 90.0},
+    {'year': 11, 'first_name': 'Kristina', 'last_name': 'Aldridge', 'gender': 'M', 'address': '107 Brick Lane, Enfield, EN1 3PP', 'contact_name': 'Aldridge', 'contact_relationship': 'Mother', 'contact_phone': '07700 900023', 'absent_today': True, 'attendance_ytd': 80.65, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 89.47, 'attendance_last_3_weeks': 85.71, 'attendance_last_4_weeks': 75.0},
+    {'year': 7, 'first_name': 'Jack', 'last_name': 'Alexander', 'gender': 'F', 'address': '140 Bulwer Road, Edmonton, London, N18 1QQ', 'contact_name': 'Alexander', 'contact_relationship': 'Father', 'contact_phone': '07700 900024', 'absent_today': True, 'attendance_ytd': 98.0, 'attendance_last_week': 80.0, 'attendance_last_2_weeks': 80.0, 'attendance_last_3_weeks': 86.67, 'attendance_last_4_weeks': 90.0},
+    {'year': 7, 'first_name': 'Ashiq', 'last_name': 'Alexander', 'gender': 'F', 'address': '18 Brettenham Road, London, N18 2ET', 'contact_name': 'Alexander', 'contact_relationship': 'Mother', 'contact_phone': '07700 900025', 'absent_today': True, 'attendance_ytd': 84.0, 'attendance_last_week': 80.0, 'attendance_last_2_weeks': 60.0, 'attendance_last_3_weeks': 73.33, 'attendance_last_4_weeks': 75.0},
+    {'year': 7, 'first_name': 'Claire', 'last_name': 'Alexander', 'gender': 'M', 'address': '6A College Close, Edmonton, London, N18 2XS', 'contact_name': 'Alexander', 'contact_relationship': 'Mother', 'contact_phone': '07700 900026', 'absent_today': True, 'attendance_ytd': 89.0, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 85.0, 'attendance_last_3_weeks': 83.33, 'attendance_last_4_weeks': 87.5},
+    {'year': 7, 'first_name': 'Anthony', 'last_name': 'Alfred', 'gender': 'M', 'address': '18 Jeremys Green, London, N18 2NB', 'contact_name': 'Alfred', 'contact_relationship': 'Mother', 'contact_phone': '07700 900027', 'absent_today': True, 'attendance_ytd': 72.0, 'attendance_last_week': 0.0, 'attendance_last_2_weeks': 0.0, 'attendance_last_3_weeks': 6.67, 'attendance_last_4_weeks': 25.0},
+    {'year': 11, 'first_name': 'Aisha', 'last_name': 'Ali', 'gender': 'F', 'address': '71 Sheldon Road, London, N18 1RQ', 'contact_name': 'Ali', 'contact_relationship': 'Mother', 'contact_phone': '07700 900028', 'absent_today': True, 'attendance_ytd': 82.0, 'attendance_last_week': 60.0, 'attendance_last_2_weeks': 63.16, 'attendance_last_3_weeks': 62.07, 'attendance_last_4_weeks': 71.79},
+    {'year': 9, 'first_name': 'Hannah', 'last_name': 'Ali', 'gender': 'M', 'address': '4 Byron Terrace Hertford Road, London, N9 7DG', 'contact_name': 'Ali', 'contact_relationship': 'Mother', 'contact_phone': '07700 900029', 'absent_today': True, 'attendance_ytd': 93.55, 'attendance_last_week': 80.0, 'attendance_last_2_weeks': 84.21, 'attendance_last_3_weeks': 89.66, 'attendance_last_4_weeks': 87.18},
 ]
 
-FIRST = ["Oliver","Amelia","Jack","Isla","Harry","Emily","George","Sophie","Noah",
-         "Ava","Leo","Mia","James","Grace","Oscar","Chloe","Thomas","Ella"]
-LAST  = ["Smith","Johnson","Williams","Brown","Jones","Davis","Miller","Taylor","Wilson",
-         "Moore","Clark","Hall","Young","King","Wright","Hill","Scott","Green"]
 
-
-# ---------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------
-
-def _resolve_sqlite_path() -> Tuple[str, str]:
-    """Return (db_url, resolved_file_path_or_note)."""
-    db_url = str(engine.url)
-    if db_url.startswith("sqlite:////"):
-        return db_url, db_url.replace("sqlite:////", "/")
-    if db_url.startswith("sqlite:///"):
-        path = db_url.replace("sqlite:///", "", 1)
-        return db_url, os.path.abspath(path)
-    return db_url, "(non-sqlite)"
-
-def _log_db_target(prefix: str):
-    db_url, db_path = _resolve_sqlite_path()
-    print(f"[{prefix}] DATABASE_URL: {db_url}")
-    print(f"[{prefix}] DB file     : {db_path}")
-
-def drop_and_create():
+def reset_db() -> None:
     print("[RESET] drop_all + create_all")
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
 
-def ensure_user(db: Session, user_id: int, name: str, role: Role) -> User:
-    """Create or update user deterministically (SQLAlchemy 2.0 style)."""
-    u = db.get(User, user_id)
-    if not u:
-        u = User(id=user_id, name=name, role=role)
-        db.add(u); db.commit(); db.refresh(u)
-        print(f"[SEED] Created user {name} (id={user_id})")
-    else:
-        changed = False
-        if u.name != name:
-            u.name = name; changed = True
-        if u.role != role:
-            u.role = role; changed = True
-        if changed:
-            db.add(u); db.commit()
-            print(f"[SEED] Updated user {name} (id={user_id})")
-    return u
 
-def _mk_name() -> str:
-    return f"{random.choice(FIRST)} {random.choice(LAST)}"
+def seed_minimal(db: Session) -> None:
+    # --- Users ---
+    admin = User(
+        name="Paddy MacGrath",
+        email="paddy@example.com",
+        role=Role.ADMIN,
+        password_hash=hash_password("admin123"),
+    )
+    ulf = User(
+        name="Ulf",
+        email="ulf@example.com",
+        role=Role.USER,
+        password_hash=hash_password("user1"),
+    )
+    una = User(
+        name="Una",
+        email="una@example.com",
+        role=Role.USER,
+        password_hash=hash_password("user2"),
+    )
 
-def _mk_addr() -> str:
-    return random.choice(LONDON_ADDR)
-
-def _due(hour: int) -> datetime:
-    # today at given hour (naive datetime)
-    return datetime(TODAY.year, TODAY.month, TODAY.day, hour, 0, 0)
-
-
-# ---------------------------------------------------------------------
-# Seed payload builders
-# ---------------------------------------------------------------------
-
-def seed_minimal(db: Session, paddy: User, ulf: User, una: User):
-    """Small, complete dataset for quick demo."""
-    s1 = Student(name="Oliver Smith",  student_class="10B", address=LONDON_ADDR[0])
-    s2 = Student(name="Amelia Johnson",student_class="9A",  address=LONDON_ADDR[1])
-    s3 = Student(name="Jack Williams", student_class="11C", address=LONDON_ADDR[2])
-    s4 = Student(name="Isla Brown",    student_class="8D",  address=LONDON_ADDR[3])
-    db.add_all([s1, s2, s3, s4]); db.commit()
-
-    for s in [s1, s2, s3, s4]:
-        db.add(Absence(
-            student_id=s.id,
-            date=TODAY - timedelta(days=random.randint(1, 7)),
-            reason_code="Syk",
-            note="Flu",
-            reported_by="Teacher"
-        ))
+    db.add_all([admin, ulf, una])
     db.commit()
+    db.refresh(admin)
+    db.refresh(ulf)
+    db.refresh(una)
 
-    t1 = Task(
-        student_id=s1.id,
-        title="Home visit: Oliver Smith",
-        body="Check plan",
-        address=s1.address,
-        checklist=[{"text": "Knock door", "done": False}],
-        due_at=_due(10),
-        status=TaskStatus.ASSIGNED,
-        assignee_user_id=ulf.id,
-        created_by=paddy.id,
-    )
-    t2 = Task(
-        student_id=s2.id,
-        title="Phone call: Amelia Johnson",
-        body="Follow up",
-        address=s2.address,
-        checklist=[{"text": "Call guardian", "done": False}],
-        due_at=_due(11),
-        status=TaskStatus.ASSIGNED,
-        assignee_user_id=ulf.id,
-        created_by=paddy.id,
-    )
-    t3 = Task(
-        student_id=s3.id,
-        title="Home visit: Jack Williams",
-        body="Collect form",
-        address=s3.address,
-        checklist=[{"text": "Bring pack", "done": False}],
-        due_at=_due(12),
-        status=TaskStatus.ASSIGNED,
-        assignee_user_id=una.id,
-        created_by=paddy.id,
-    )
-    t4 = Task(
-        student_id=s4.id,
-        title="Parent meeting: Isla Brown",
-        body="Behaviour plan",
-        address=s4.address,
-        checklist=[],
-        due_at=_due(13),
-        status=TaskStatus.NEW,
-        assignee_user_id=None,
-        created_by=paddy.id,
-    )
-    db.add_all([t1, t2, t3, t4]); db.commit()
+    print(f"[SEED] Users created: admin={admin.id}, ulf={ulf.id}, una={una.id}")
 
-    for t in [t1, t2, t3]:
-        log_event(db, t, paddy, TaskEventType.ASSIGN, {"to": t.assignee_user_id})
-
-    print(f"[SEED] Minimal: tasks={db.query(Task).count()}, students={db.query(Student).count()}")
-
-
-def seed_big(db: Session, paddy: User, ulf: User, una: User, students: int = 60):
-    """Large demo: many students (London), tasks spread across Ulf/Una + some NEW."""
-    studs: List[Student] = []
-    for _ in range(students):
-        s = Student(name=_mk_name(), student_class=str(7 + random.randint(0, 5)) + "A", address=_mk_addr())
-        studs.append(s)
-    db.add_all(studs); db.commit()
-
-    # Absence history (1–3 per student)
-    for s in studs:
-        for _ in range(random.randint(1, 3)):
-            db.add(Absence(
-                student_id=s.id,
-                date=TODAY - timedelta(days=random.randint(1, 14)),
-                reason_code=random.choice(["Syk", "Reise", "Annet"]),
-                note="Auto-generated",
-                reported_by=random.choice(["Teacher", "Admin"]),
-            ))
-    db.commit()
-
-    # Tasks: 1 per student
-    tasks = []
-    for i, s in enumerate(studs):
-        assignee = ulf if i % 2 == 0 else una
-        status = random.choice([TaskStatus.ASSIGNED, TaskStatus.ACCEPTED, TaskStatus.NEW])
-        t = Task(
-            student_id=s.id,
-            title=f"Visit: {s.name}",
-            body="Auto generated check",
-            address=s.address,
-            checklist=[{"text": "Knock door", "done": False}, {"text": "Add note", "done": False}],
-            due_at=_due(9 + (i % 6)),
-            status=status,
-            assignee_user_id=None if status == TaskStatus.NEW else assignee.id,
-            created_by=paddy.id,
+    # --- Students from STUDENT_ROWS ---
+    students: list[Student] = []
+    for row in STUDENT_ROWS:
+        student = Student(
+            name=f"{row['first_name']} {row['last_name']}",
+            student_class=str(row["year"]),
+            address=row["address"],
+            gender=row["gender"],
+            contact_name=row["contact_name"],
+            contact_relationship=row["contact_relationship"],
+            contact_phone=row["contact_phone"],
+            absent_today=row["absent_today"],
+            attendance_ytd=row["attendance_ytd"],
+            attendance_last_week=row["attendance_last_week"],
+            attendance_last_2_weeks=row["attendance_last_2_weeks"],
+            attendance_last_3_weeks=row["attendance_last_3_weeks"],
+            attendance_last_4_weeks=row["attendance_last_4_weeks"],
         )
-        tasks.append(t)
-    db.add_all(tasks); db.commit()
+        db.add(student)
+        students.append(student)
 
+    db.commit()
+    for s in students:
+        db.refresh(s)
+
+    print(f"[SEED] Created {len(students)} students")
+
+    # --- Tasks for today (one per student) ---
+    today = datetime.utcnow().date()
+    tasks: list[Task] = []
+    for i, s in enumerate(students, start=1):
+        assignee = ulf if i % 2 == 1 else una
+        task = Task(
+            student_id=s.id,
+            title=f"Home visit for {s.name}",
+            body="Initial visit",
+            address=s.address,
+            status=TaskStatus.ASSIGNED,
+            assignee_user_id=assignee.id,
+            created_by=admin.id,
+            due_at=datetime.combine(today, datetime.min.time()).replace(
+                hour=9 + (i % 5)
+            ),
+            checklist=[{"text": "Talk to guardian", "done": False}],
+        )
+        db.add(task)
+        tasks.append(task)
+
+    db.commit()
     for t in tasks:
-        if t.assignee_user_id:
-            log_event(db, t, paddy, TaskEventType.ASSIGN, {"to": t.assignee_user_id})
+        db.refresh(t)
+        log_event(db, t, admin, TaskEventType.EDIT, {"create": True})
 
-    print(f"[SEED] Big: students={len(studs)}, tasks={len(tasks)}")
-
-
-# ---------------------------------------------------------------------
-# Flows
-# ---------------------------------------------------------------------
-
-def do_reset_and_seed(big: int | None):
-    _log_db_target("SEED")
-    drop_and_create()
-    with SessionLocal() as db:
-        paddy = ensure_user(db, 1, "Paddy MacGrath", Role.ADMIN)
-        ulf   = ensure_user(db, 2, "Ulf", Role.USER)
-        una   = ensure_user(db, 3, "Una", Role.USER)
-
-        if big and big > 0:
-            seed_big(db, paddy, ulf, una, students=big)
-        else:
-            seed_minimal(db, paddy, ulf, una)
-
-def do_ensure(big: int | None):
-    """Idempotent: creates users and minimal data if DB is empty.
-       If --big N is passed, adds large demo set even if data exists."""
-    _log_db_target("ENSURE")
-    Base.metadata.create_all(bind=engine)
-    with SessionLocal() as db:
-        paddy = ensure_user(db, 1, "Paddy MacGrath", Role.ADMIN)
-        ulf   = ensure_user(db, 2, "Ulf", Role.USER)
-        una   = ensure_user(db, 3, "Una", Role.USER)
-
-        have_tasks = db.query(Task).count()
-        have_students = db.query(Student).count()
-
-        if big and big > 0:
-            print("[ENSURE] big mode → adding data regardless of existing rows")
-            seed_big(db, paddy, ulf, una, students=big)
-            return
-
-        if have_tasks == 0 and have_students == 0:
-            print("[ENSURE] empty DB → creating minimal demo set")
-            seed_minimal(db, paddy, ulf, una)
-        else:
-            print(f"[ENSURE] leaving existing data (students={have_students}, tasks={have_tasks})")
+    print(f"[SEED] Minimal: tasks={len(tasks)}")
 
 
-# ---------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------
+def main(reset: bool = False) -> None:
+    print(f"[SEED] DATABASE_URL: {settings.DATABASE_URL}")
 
-def main():
-    parser = argparse.ArgumentParser(description="Seed/Ensure demo data for Simple Task Pro.")
-    parser.add_argument("--reset", action="store_true",
-                        help="Drop & recreate tables, then seed.")
-    parser.add_argument("--ensure", action="store_true",
-                        help="Idempotent: create if empty; never delete.")
-    parser.add_argument("--big", type=int, default=0,
-                        help="Also add a large demo set (N students, e.g. 60).")
-    args = parser.parse_args()
+    if reset:
+        reset_db()
 
-    if args.reset and args.ensure:
-        print("[WARN] both --reset and --ensure → using --reset")
-        args.ensure = False
-
-    if args.reset:
-        do_reset_and_seed(args.big)
-    elif args.ensure or args.big > 0:
-        do_ensure(args.big)
-    else:
-        # default to ensure minimal
-        do_ensure(0)
-
+    db = SessionLocal()
+    try:
+        seed_minimal(db)
+    finally:
+        db.close()
     print("Seed complete.")
 
+
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--reset", action="store_true", help="Drop + recreate tables before seeding"
+    )
+    args = parser.parse_args()
+    main(reset=args.reset)

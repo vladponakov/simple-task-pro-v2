@@ -1,4 +1,4 @@
-# Simple Task Pro — v2
+# Visit Task Pro — v2
 
 Full-stack demo to automate end-to-end task assignment between **Admins** and **Teachers**, including task creation, delegation, execution, and audit tracking.
 
