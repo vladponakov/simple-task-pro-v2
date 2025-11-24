@@ -228,31 +228,35 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class LoginResponse(BaseModel):
-    token: str
-    user: UserOut
-
-
-@app.post("/api/login", response_model=LoginResponse)
+@app.post("/api/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
-    """Simple email + password login.
-
-    Returns a lightweight bearer token: "user:<id>".
-    The frontend should store it and send as:
-        Authorization: Bearer user:<id>
     """
-    user = db.query(User).filter(User.email == data.email).first()
-    from app.utils import verify_password  # lokal import
+    Superenkel login:
+    - Slår opp bruker på e-post
+    - Verifiserer passord
+    - Returnerer token + bruker som ren dict
+    """
+    from app.utils import verify_password  # lokal import for å unngå sirkulær import
 
+    user = db.query(User).filter(User.email == data.email).first()
     if not user or not verify_password(data.password, user.password_hash):
+        # Viktig: 401 ved feil innlogging, ikke 500
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token = f"user:{user.id}"
-    return LoginResponse(token=token, user=user)
 
+    # Bygg JSON manuelt – ingen komplisert pydantic-nesting
+    return {
+        "token": token,
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role.value if hasattr(user.role, "value") else user.role,
+        },
+    }
 
 # -------------------- Health / Me --------------------
-
 
 @app.get("/health")
 @app.get("/api/health")
