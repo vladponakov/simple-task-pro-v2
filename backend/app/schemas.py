@@ -50,46 +50,49 @@ class UserCreate(BaseModel):
 # ---------------- Students & absences ----------------
 
 class StudentIn(BaseModel):
-    # Grunninfo
-    name: str
-    student_class: Optional[str] = None   # f.eks. "11"
-    address: Optional[str] = None
+    """
+    Input fra Make.com for /api/batch/import_students.
+    Dette matcher kolonnene i Excel.
+    """
 
-    # Fra Excel / ekstern kilde
-    gender: Optional[str] = None
-    contact_name: Optional[str] = None
-    contact_relationship: Optional[str] = None
-    contact_phone: Optional[str] = None
+    admission_number: Optional[str] = None  # "Admission Number"
 
-    absent_today: Optional[bool] = None
+    year: Optional[str] = None             # "Year"
+    first_name: str                        # "First name"
+    last_name: str                         # "Last name"
+    gender: Optional[str] = None           # "Gender"
+    address: Optional[str] = None          # "Student address"
 
-    # Attendance-snapshots
-    attendance_ytd: Optional[float] = None
-    attendance_last_week: Optional[float] = None
+    contact_name: Optional[str] = None             # "Contact 1 Name"
+    contact_relationship: Optional[str] = None     # "Contact 1 Relationship"
+    contact_phone: Optional[str] = None            # "Contact 1 Telephone"
+
+    # Absent Today → YES/NO i Excel, men Make.com konverterer til bool
+    absent_today: bool = False
+
+    # Attendance-prosent
+    attendance_ytd: Optional[float] = None          # "% YtD"
+    attendance_last_week: Optional[float] = None    # "Last week"
     attendance_last_2_weeks: Optional[float] = None
     attendance_last_3_weeks: Optional[float] = None
     attendance_last_4_weeks: Optional[float] = None
-
-    # Evt. gamle snapshot-felter (kan beholdes for kompatibilitet)
-    attendance_pct: Optional[int] = None
-    absence_pct: Optional[int] = None
-    last_absence_date: Optional[date] = None
-    last_absence_reason: Optional[str] = None
-
 
 class StudentOut(ORMModel):
     id: int
-
     name: str
-    student_class: Optional[str]
-    address: Optional[str]
+    student_class: Optional[str] = None
+    address: Optional[str] = None
 
+    admission_number: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     gender: Optional[str] = None
+
     contact_name: Optional[str] = None
     contact_relationship: Optional[str] = None
     contact_phone: Optional[str] = None
 
-    absent_today: Optional[bool] = None
+    absent_today: bool = False
 
     attendance_ytd: Optional[float] = None
     attendance_last_week: Optional[float] = None
@@ -101,6 +104,9 @@ class StudentOut(ORMModel):
     absence_pct: Optional[int] = None
     last_absence_date: Optional[date] = None
     last_absence_reason: Optional[str] = None
+
+    created_at: datetime
+    updated_at: datetime
 
 
 class AbsenceIn(BaseModel):
@@ -157,7 +163,7 @@ class TaskOut(TaskIn, ORMModel):
     updated_at: datetime
     completed_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
-
+    student_admission_number: Optional[str] = None
 
 class TaskEdit(BaseModel):
     title: Optional[str] = None
@@ -201,6 +207,16 @@ class HistoryItem(BaseModel):
     note: Optional[str] = None
     reported_by: Optional[str] = None
 
+class DoneExportItem(BaseModel):
+    """
+    Brukes av /api/batch/export_done.
+    Dette er payload-en Make.com får tilbake.
+    """
+
+    admission_number: str
+    visited_today: str = "Done"
+    done_at: datetime
+    
 class BatchSettingsOut(BaseModel):
     rollover_hour: int
 

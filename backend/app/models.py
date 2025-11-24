@@ -91,58 +91,48 @@ class Student(Base):
     __tablename__ = "students"
 
     id = Column(Integer, primary_key=True, index=True)
-    # Full display name (we’ll store "First Last" from the Excel rows)
+
+    admission_number = Column(String, nullable=False, unique=True, index=True)
+
+    # Navn / klasse / adresse (brukes i UI)
     name = Column(String, nullable=False)
-
-    # Year / class (we’re storing the "Year" from Excel here as string)
     student_class = Column(String, nullable=True)
-
-    # Postal address
     address = Column(String, nullable=True)
 
-    # ---------- NEW FIELDS (Option A) ----------
-    # Gender from Excel (M/F)
+    # Nytt: kobling mot master-Excel
+    admission_number = Column(String, nullable=True, index=True)
+
+    # Navnedeling (valgfritt, men fint å ha)
+    first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
     gender = Column(String, nullable=True)
 
-    # Contact person
+    # Kontaktinfo
     contact_name = Column(String, nullable=True)
     contact_relationship = Column(String, nullable=True)
     contact_phone = Column(String, nullable=True)
 
-    # Whether the student is marked absent today in the imported data
+    # Om eleven er fraværende i dag
     absent_today = Column(Boolean, nullable=False, server_default="0")
 
-    # Attendance metrics from Excel (can contain decimals, so Float)
-    attendance_ytd = Column(Float, nullable=True)           # "% YtD"
-    attendance_last_week = Column(Float, nullable=True)     # "Last week"
+    # Attendance fra Excel (% YtD og siste uker)
+    attendance_ytd = Column(Float, nullable=True)
+    attendance_last_week = Column(Float, nullable=True)
     attendance_last_2_weeks = Column(Float, nullable=True)
     attendance_last_3_weeks = Column(Float, nullable=True)
     attendance_last_4_weeks = Column(Float, nullable=True)
 
-    # ---------- EXISTING SNAPSHOT STATS ----------
-    # Optional snapshot stats (can be filled by integrations / API later)
+    # Gamle snapshot-felter – beholder for kompatibilitet
     attendance_pct = Column(Integer, nullable=True)
     absence_pct = Column(Integer, nullable=True)
     last_absence_date = Column(Date, nullable=True)
     last_absence_reason = Column(String, nullable=True)
 
-    created_at = Column(
-        DateTime, server_default=func.now(), nullable=False
-    )
-    updated_at = Column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
-    absences = relationship(
-        "Absence",
-        back_populates="student",
-        cascade="all, delete-orphan",
-    )
+    absences = relationship("Absence", back_populates="student", cascade="all, delete-orphan")
     tasks = relationship("Task", back_populates="student")
-
 
 class Absence(Base):
     __tablename__ = "absences"

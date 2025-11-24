@@ -1,7 +1,8 @@
-
 from __future__ import annotations
 
 import os
+import asyncio
+import logging
 from datetime import datetime, timedelta, date
 from typing import List, Optional
 
@@ -18,6 +19,7 @@ from app.config import settings
 from app.db import Base, engine, get_db, SessionLocal
 from app.models import (
     Absence,
+    AppSettings,
     Comment,
     Role,
     Student,
@@ -30,8 +32,11 @@ from app.schemas import (
     AbsenceIn,
     AbsenceOut,
     AssignIn,
+    BatchSettingsOut,
+    BatchSettingsUpdate,
     CommentCreate,
     CommentOut,
+    DoneExportItem,
     HistoryItem,
     StatusIn,
     StudentIn,
@@ -42,8 +47,6 @@ from app.schemas import (
     TaskOut,
     UserCreate,
     UserOut,
-    BatchSettingsOut,       
-    BatchSettingsUpdate, 
 )
 from app.utils import (
     hash_password,
@@ -53,9 +56,15 @@ from app.utils import (
     notify_make_task_status,
 )
 
-SNAPSHOT_EXCLUDE_FIELDS = {"attendance_pct", "last_absence_date", "last_absence_reason", "visit_notes"}
+SNAPSHOT_EXCLUDE_FIELDS = {
+    "attendance_pct",
+    "last_absence_date",
+    "last_absence_reason",
+    "visit_notes",
+}
 
-# -------------------- Auth-dependencier (ny) --------------------
+# -------------------- Auth-dependencies --------------------
+
 
 def get_current_user(
     db: Session = Depends(get_db),
@@ -112,10 +121,16 @@ def get_api_token(
     return x_api_token
 
 
-import asyncio
-import logging
+# -------------------- Rollover scheduler (background) --------------------
 
-async def rollover_scheduler_loop():
+
+async def rollover_scheduler_loop() -> None:
+    """
+    Kjør i bakgrunnen:
+    - les rollover_hour fra AppSettings
+    - når vi er på riktig time/minutt -> kjør rollover
+    - sov litt og prøv igjen
+    """
     await asyncio.sleep(5)
     last_run_date: Optional[date] = None
 
@@ -156,11 +171,12 @@ async def rollover_scheduler_loop():
                 finally:
                     db.close()
 
+                # vent et minutt så vi ikke trigger flere ganger samme minutt
                 await asyncio.sleep(60)
             else:
                 await asyncio.sleep(30)
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logging.exception("Error in rollover scheduler loop: %s", exc)
             await asyncio.sleep(60)
 
@@ -199,22 +215,23 @@ async def no_cache_index(request: Request, call_next):
 
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
-    # start bakgrunns-scheduler
-    import asyncio
     asyncio.create_task(rollover_scheduler_loop())
 
 
 # -------------------- Auth --------------------
 
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
+
 class LoginResponse(BaseModel):
     token: str
     user: UserOut
+
 
 @app.post("/api/login", response_model=LoginResponse)
 def login(data: LoginRequest, db: Session = Depends(get_db)):
@@ -225,7 +242,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         Authorization: Bearer user:<id>
     """
     user = db.query(User).filter(User.email == data.email).first()
-    from app.utils import verify_password  # local import to avoid circular in type-checkers
+    from app.utils import verify_password  # lokal import
 
     if not user or not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -252,7 +269,11 @@ def me(user: User = Depends(get_current_user)):
 
 
 @app.get("/api/tasks/{task_id}/comments", response_model=List[CommentOut])
-def list_comments(task_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_comments(
+    task_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task or task.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -308,7 +329,10 @@ def create_student(
 
 
 @app.get("/api/students", response_model=List[StudentOut])
-def list_students(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_students(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     return db.query(Student).order_by(Student.name.asc()).all()
 
 
@@ -412,7 +436,7 @@ def list_tasks(
     if status:
         q = q.filter(Task.status == status)
 
-    # Scope: admins can request 'all' (default); users default to 'my'
+    # Scope: admins kan be om 'all' (default); users default til 'my'
     if user.role != Role.ADMIN or scope == "my":
         q = q.filter((Task.assignee_user_id == user.id) | (Task.created_by == user.id))
 
@@ -439,7 +463,11 @@ def get_task(
     t = db.query(Task).filter(Task.id == task_id).first()
     if not t or t.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Task not found")
-    if user.role != Role.ADMIN and t.assignee_user_id != user.id and t.created_by != user.id:
+    if (
+        user.role != Role.ADMIN
+        and t.assignee_user_id != user.id
+        and t.created_by != user.id
+    ):
         raise HTTPException(status_code=403, detail="Forbidden")
     return t
 
@@ -457,7 +485,7 @@ def edit_task(
 
     payload = data.model_dump(exclude_unset=True)
 
-    # Unify "reason" -> "body" so Edit Reason and Reject Reason share the same field
+    # Unify "reason" -> "body" så Edit Reason og Reject Reason deler samme felt
     if "reason" in payload and "body" not in payload:
         payload["body"] = payload.pop("reason")
 
@@ -510,7 +538,11 @@ def restore_task(
     return {"ok": True}
 
 
-@app.post("/api/tasks/{task_id}/assign", response_model=TaskOut, dependencies=[Depends(require_admin)])
+@app.post(
+    "/api/tasks/{task_id}/assign",
+    response_model=TaskOut,
+    dependencies=[Depends(require_admin)],
+)
 def assign_task(
     task_id: int,
     data: AssignIn,
@@ -558,7 +590,7 @@ def change_status(
         if not data.reason:
             raise HTTPException(status_code=400, detail="Reason required for reject")
         t.status = TaskStatus.REJECTED
-        t.body = (data.reason or "").strip()  # store reason in Task.body
+        t.body = (data.reason or "").strip()  # lagre reason i Task.body
         log_event(
             db,
             t,
@@ -570,6 +602,8 @@ def change_status(
         t.status = TaskStatus.DONE
         t.completed_at = datetime.utcnow()
         log_event(db, t, user, TaskEventType.COMPLETE, {"at": now_iso})
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action")
 
     db.add(t)
     db.commit()
@@ -591,7 +625,11 @@ def task_events(
     t = db.query(Task).filter(Task.id == task_id).first()
     if not t:
         raise HTTPException(status_code=404, detail="Task not found")
-    if user.role != Role.ADMIN and t.assignee_user_id != user.id and t.created_by != user.id:
+    if (
+        user.role != Role.ADMIN
+        and t.assignee_user_id != user.id
+        and t.created_by != user.id
+    ):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     rows = db.execute(
@@ -643,7 +681,7 @@ def get_todays_tasks(
     )
     tasks = q.all()
 
-    # Attach lightweight attendance snapshot for UI (no schema migration needed)
+    # Attach lightweight attendance snapshot for UI (ingen skjemamigrasjon)
     for t in tasks:
         if getattr(t, "student_id", None):
             student = db.query(Student).filter(Student.id == t.student_id).first()
@@ -655,7 +693,7 @@ def get_todays_tasks(
                     .all()
                 )
                 last_abs = absences[0] if absences else None
-                # basic derived attendance number
+                # enkel «fake» attendance hvis du vil
                 t.attendance_pct = max(40, 100 - len(absences) * 5)  # type: ignore[attr-defined]
                 if last_abs:
                     t.last_absence_date = last_abs.date  # type: ignore[attr-defined]
@@ -663,7 +701,11 @@ def get_todays_tasks(
     return tasks
 
 
-@app.get("/api/admin/tasks", response_model=List[TaskOut], dependencies=[Depends(require_admin)])
+@app.get(
+    "/api/admin/tasks",
+    response_model=List[TaskOut],
+    dependencies=[Depends(require_admin)],
+)
 def admin_tasks_overview(
     db: Session = Depends(get_db),
     date_filter: Optional[datetime] = None,
@@ -671,9 +713,9 @@ def admin_tasks_overview(
 ) -> List[TaskOut]:
     """Admin view: list tasks for a given date and bucket.
 
-    - not_done: everything that is not DONE/REJECTED
-    - rejected: only REJECTED
-    - all: no status filter
+    - not_done: alt som ikke er DONE/REJECTED
+    - rejected: bare REJECTED
+    - all: ingen statusfilter
     """
     q = db.query(Task).filter(Task.deleted_at.is_(None))
 
@@ -765,6 +807,7 @@ def batch_rollover_not_done(
     moved = _run_rollover_not_done(db, actor)
     return {"moved": moved}
 
+
 def _run_rollover_not_done(db: Session, actor: User | None = None) -> int:
     """
     Faktisk jobb som flytter dagens ikke-ferdige tasks til i morgen.
@@ -802,23 +845,50 @@ def _run_rollover_not_done(db: Session, actor: User | None = None) -> int:
 
 @app.get(
     "/api/batch/export_done",
-    response_model=List[TaskOut],
+    response_model=List[DoneExportItem],
     dependencies=[Depends(require_admin)],
 )
 def batch_export_done(
-    since: Optional[datetime] = None,
+    date_filter: Optional[date] = None,
     db: Session = Depends(get_db),
     _token: Optional[str] = Depends(get_api_token),
-) -> List[TaskOut]:
-    """18:00-batch: return DONE tasks to be pushed to external API.
-
-    The external system can call this, push the data, then remember the last
-    `completed_at` timestamp and pass it back as `since` next time.
+) -> List[DoneExportItem]:
     """
-    q = db.query(Task).filter(Task.status == TaskStatus.DONE)
-    if since:
-        q = q.filter(Task.completed_at >= since)
-    return q.order_by(Task.completed_at.asc().nullslast()).all()
+    20:00-batch: returner DONE-oppgaver pr dag som Make.com kan bruke til
+    å oppdatere Excel:
+
+    - Matchet på Task.status == DONE
+    - Kobler mot Student for å få Admission Number
+    - Filtrerer på completed_at-dato == date_filter (eller i dag)
+    """
+    if date_filter is None:
+        date_filter = datetime.utcnow().date()
+
+    rows = (
+        db.query(Task, Student)
+        .join(Student, Task.student_id == Student.id)
+        .filter(
+            Task.deleted_at.is_(None),
+            Task.status == TaskStatus.DONE,
+            Task.completed_at.isnot(None),
+            func.date(Task.completed_at) == date_filter,
+        )
+        .all()
+    )
+
+    out: List[DoneExportItem] = []
+    for task, student in rows:
+        if not getattr(student, "admission_number", None):
+            continue
+
+        out.append(
+            DoneExportItem(
+                admission_number=student.admission_number,
+                done_at=task.completed_at,  # type: ignore[arg-type]
+            )
+        )
+
+    return out
 
 
 @app.post(
@@ -833,37 +903,107 @@ def batch_import_students(
     _token: Optional[str] = Depends(get_api_token),
 ) -> List[StudentOut]:
     """
-    07:00-batch: full refresh av students-tabellen.
+    07:00-batch: oppdater elever + opprett dagens Visit-tasks.
 
-    Strategi:
-    - Vi sletter ikke gamle elever automatisk (for å beholde history),
-      men vi gjør "upsert" på name + student_class.
+    - Upsert-er studentdata basert på admission_number (hvis finnes),
+      ellers faller tilbake på name + year.
+    - Hvis absent_today == True → lager "Visit student"-task for i dag,
+      men bare hvis det ikke finnes en aktiv task for denne eleven i dag.
     """
+    today = datetime.utcnow().date()
     out: List[Student] = []
 
     for item in payload:
         data = item.model_dump(exclude_unset=True)
 
-        # En enkel match: navn + class
-        q = db.query(Student).filter(
-            Student.name == data["name"],
-            Student.student_class == data.get("student_class"),
-        )
+        admission_number = data.get("admission_number")
+
+        # --- Finn eksisterende student ---
+        if admission_number:
+            q = db.query(Student).filter(Student.admission_number == admission_number)
+        else:
+            full_name = f'{data.get("first_name", "").strip()} {data.get("last_name", "").strip()}'.strip()
+            q = db.query(Student).filter(
+                Student.name == full_name,
+                Student.student_class == data.get("year"),
+            )
+
         s = q.first()
         if not s:
-            s = Student(**data)
-            db.add(s)
-        else:
-            for k, v in data.items():
-                setattr(s, k, v)
+            s = Student()
+            if admission_number:
+                s.admission_number = admission_number
+
+        # --- Oppdater felter på student ---
+        first_name = data.get("first_name", "").strip()
+        last_name = data.get("last_name", "").strip()
+        if first_name:
+            s.first_name = first_name
+        if last_name:
+            s.last_name = last_name
+        name_combined = f"{first_name} {last_name}".strip()
+        if name_combined:
+            s.name = name_combined
+
+        s.student_class = data.get("year") or s.student_class
+        s.address = data.get("address") or s.address
+        s.gender = data.get("gender") or s.gender
+
+        s.contact_name = data.get("contact_name") or s.contact_name
+        s.contact_relationship = data.get("contact_relationship") or s.contact_relationship
+        s.contact_phone = data.get("contact_phone") or s.contact_phone
+
+        s.absent_today = bool(data.get("absent_today", False))
+
+        s.attendance_ytd = data.get("attendance_ytd")
+        s.attendance_last_week = data.get("attendance_last_week")
+        s.attendance_last_2_weeks = data.get("attendance_last_2_weeks")
+        s.attendance_last_3_weeks = data.get("attendance_last_3_weeks")
+        s.attendance_last_4_weeks = data.get("attendance_last_4_weeks")
+
+        db.add(s)
+        db.flush()  # sørg for at s.id har verdi
+
         out.append(s)
+
+        # --- Hvis eleven er markert som absent today → lag dagens task ---
+        if s.absent_today:
+            existing = (
+                db.query(Task)
+                .filter(
+                    Task.student_id == s.id,
+                    Task.deleted_at.is_(None),
+                    func.date(Task.due_at) == today,
+                    Task.status.notin_([TaskStatus.DONE, TaskStatus.REJECTED]),
+                )
+                .first()
+            )
+            if not existing:
+                # default due_at = i dag kl 10:00
+                due_dt = datetime.combine(
+                    today,
+                    datetime.min.time(),
+                ).replace(hour=10)
+
+                t = Task(
+                    student_id=s.id,
+                    title="Visit student",
+                    address=s.address,
+                    status=TaskStatus.NEW,
+                    due_at=due_dt,
+                    created_by=actor.id,
+                    checklist=[],
+                )
+                db.add(t)
 
     db.commit()
     for s in out:
         db.refresh(s)
     return out
 
-from app.models import AppSettings  # sørg for at denne importen er øverst
+
+# -------------------- Batch settings (admin) --------------------
+
 
 @app.get(
     "/api/settings/batch",
@@ -901,6 +1041,7 @@ def update_batch_settings(
     db.commit()
     db.refresh(s)
     return s
+
 
 # -------------------- Users & admin helpers --------------------
 
@@ -945,7 +1086,7 @@ def delete_student(student_id: int, db: Session = Depends(get_db)):
     s = db.query(Student).filter(Student.id == student_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Student not found")
-    # avoid breaking FK constraints if there is history
+    # avoid breaking FK constraints if det finnes history
     has_tasks = db.query(Task).filter(Task.student_id == student_id).count()
     has_absences = db.query(Absence).filter(Absence.student_id == student_id).count()
     if has_tasks or has_absences:
@@ -968,7 +1109,7 @@ def head_root():
 
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str, request: Request):
-    # Let mounted routes (/assets, /api, docs) take priority; this is last resort.
+    # La mountede routes (/assets, /api, docs) ha prioritet; dette er siste utvei.
     if os.path.isdir(static_dir):
         return FileResponse(os.path.join(static_dir, "index.html"))
     raise HTTPException(status_code=404)
