@@ -446,46 +446,37 @@ const [batchSettings, setBatchSettings] = useState(() => {
   try {
     const raw = localStorage.getItem("batchSettings");
     if (!raw) {
-      return {
-        createAt: "08:00",
-        rolloverAt: "17:00",
-        exportDoneAt: "18:00",
-        studentSyncAt: "07:00",
-      };
+      return { rolloverAt: "17:00" };
     }
     const parsed = JSON.parse(raw);
     return {
-      createAt: parsed.createAt || "08:00",
       rolloverAt: parsed.rolloverAt || "17:00",
-      exportDoneAt: parsed.exportDoneAt || "18:00",
-      studentSyncAt: parsed.studentSyncAt || "07:00",
     };
   } catch {
-    return {
-      createAt: "08:00",
-      rolloverAt: "17:00",
-      exportDoneAt: "18:00",
-      studentSyncAt: "07:00",
-    };
+    return { rolloverAt: "17:00" };
   }
 });
 
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const [st, us] = await Promise.all([
-          API("/api/students"),
-          API("/api/users"),
-        ]);
-        setStudents(st || []);
-        setUsers(us || []);
-      } catch (e) {
-        console.error("Failed to load settings data", e);
-      }
-    };
-    load();
-  }, []);
+
+  const load = async () => {
+  try {
+    const [st, us, batch] = await Promise.all([
+      API("/api/students"),
+      API("/api/users"),
+      API("/api/settings/batch"),
+    ]);
+    setStudents(st || []);
+    setUsers(us || []);
+    if (batch && typeof batch.rollover_hour === "number") {
+      const hh = String(batch.rollover_hour).padStart(2, "0");
+      setBatchSettings({ rolloverAt: `${hh}:00` });
+    }
+  } catch (e) {
+    console.error("Failed to load settings data", e);
+  }
+};
+
 
   useEffect(() => {
     const onEsc = (e) => e.key === "Escape" && onClose();
@@ -498,12 +489,27 @@ const [batchSettings, setBatchSettings] = useState(() => {
     };
   }, [onClose]);
 
-  const saveBatchSettings = () => {
+  const saveBatchSettings = async () => {
+  try {
+    const [hh] = batchSettings.rolloverAt.split(":");
+    const hour = parseInt(hh, 10);
+    if (Number.isNaN(hour) || hour < 0 || hour > 23) {
+      alert("Please enter a valid hour between 00:00 and 23:59");
+      return;
+    }
+
+    await API("/api/settings/batch", {
+      method: "POST",
+      body: JSON.stringify({ rollover_hour: hour }),
+    });
+
     localStorage.setItem("batchSettings", JSON.stringify(batchSettings));
-    alert(
-      "Batch times saved locally. Use these when configuring Make.com or cron jobs."
-    );
-  };
+    alert("Rollover time updated – not-done tasks will be moved at this time.");
+  } catch (e) {
+    alert(e?.message || "Failed to save batch settings");
+  }
+};
+
 
   const createStudent = async () => {
     if (!studentName.trim()) {
@@ -627,49 +633,27 @@ const createUser = async () => {
         {tab === "batch" && (
   <>
     <p className="help">
-      These times are stored locally and used as documentation for how
-      your daily batches and integrations (Make.com, cron, API jobs) should run.
-    </p>
+  This time controls when all not-done tasks for today will be moved
+  automatically to tomorrow (same as “Move to next day”).
+</p>
 
-    <label className="label">Create daily tasks at</label>
-    <input
-      type="time"
-      className="input"
-      value={batchSettings.createAt}
-      onChange={(e) =>
-        setBatchSettings((s) => ({ ...s, createAt: e.target.value }))
-      }
-    />
+<label className="label">Move not-done tasks at</label>
+<select
+  className="input"
+  value={batchSettings.rolloverAt}
+  onChange={(e) => setBatchSettings((s) => ({ ...s, rolloverAt: e.target.value }))}
+>
+  {Array.from({ length: 24 }).map((_, h) => {
+    const label = `${String(h).padStart(2, "0")}:00`;
+    return (
+      <option key={h} value={label}>
+        {label}
+      </option>
+    );
+  })}
+</select>
 
-    <label className="label">Move not-done tasks at</label>
-    <input
-      type="time"
-      className="input"
-      value={batchSettings.rolloverAt}
-      onChange={(e) =>
-        setBatchSettings((s) => ({ ...s, rolloverAt: e.target.value }))
-      }
-    />
 
-    <label className="label">Export done tasks at</label>
-    <input
-      type="time"
-      className="input"
-      value={batchSettings.exportDoneAt}
-      onChange={(e) =>
-        setBatchSettings((s) => ({ ...s, exportDoneAt: e.target.value }))
-      }
-    />
-
-    <label className="label">Student data sync (API) at</label>
-    <input
-      type="time"
-      className="input"
-      value={batchSettings.studentSyncAt}
-      onChange={(e) =>
-        setBatchSettings((s) => ({ ...s, studentSyncAt: e.target.value }))
-      }
-    />
 
     <div className="btns" style={{ marginTop: 12 }}>
       <button className="btn" onClick={onClose}>
@@ -2270,16 +2254,26 @@ function App() {
         </div>
 
         <div className="tabs-right">
-          {isAdmin && (
-            <button
-              className="tab link no-shrink"
-              onClick={() => setShowCreate(true)}
-              aria-label="Create new task"
-            >
-              + New task
-            </button>
-          )}
-        </div>
+  <button
+    className="tab link no-shrink"
+    onClick={reload}
+    aria-label="Refresh tasks"
+    title="Refresh tasks"
+  >
+    ↻ Refresh
+  </button>
+
+  {isAdmin && (
+    <button
+      className="tab link no-shrink"
+      onClick={() => setShowCreate(true)}
+      aria-label="Create new task"
+    >
+      + New task
+    </button>
+  )}
+</div>
+
       </div>
 
       {activeTab === "board" ? (
