@@ -128,8 +128,10 @@ def restore(db: Session, task: Task, actor: User) -> None:
 def notify_make_task_status(task: Task) -> None:
     """
     Kalles når en oppgave går til DONE.
-    Sender et POST-kall til Make.com webhook med
-    samme struktur som du brukte i curl-eksempelet.
+    Sender et POST-kall til Make.com webhook.
+
+    Nå sender vi både "task" OG "student" i payloaden,
+    slik at du kan bruke f.eks. {{1.student.admission_number}} i Make.
     """
     url = settings.MAKE_WEBHOOK_URL
     api_key = settings.MAKE_WEBHOOK_API_KEY
@@ -141,6 +143,9 @@ def notify_make_task_status(task: Task) -> None:
 
     try:
         updated_at = task.updated_at or datetime.utcnow()
+
+        # Prøv å hente student-relasjonen (lazy-load via SQLAlchemy)
+        student = getattr(task, "student", None)
 
         payload: Dict[str, Any] = {
             "task_id": task.id,
@@ -161,6 +166,27 @@ def notify_make_task_status(task: Task) -> None:
             },
         }
 
+        # ➕ NYTT: pakk inn student-detaljer hvis de finnes
+        if student is not None:
+            payload["student"] = {
+                "id": student.id,
+                "admission_number": student.admission_number,
+                "year": student.student_class,
+                "first_name": student.first_name,
+                "last_name": student.last_name,
+                "gender": student.gender,
+                "address": student.address,
+                "contact_name": student.contact_name,
+                "contact_relationship": student.contact_relationship,
+                "contact_phone": student.contact_phone,
+                "absent_today": bool(getattr(student, "absent_today", False)),
+                "attendance_ytd": student.attendance_ytd,
+                "attendance_last_week": student.attendance_last_week,
+                "attendance_last_2_weeks": student.attendance_last_2_weeks,
+                "attendance_last_3_weeks": student.attendance_last_3_weeks,
+                "attendance_last_4_weeks": student.attendance_last_4_weeks,
+            }
+
         data_bytes = json.dumps(payload, default=str).encode("utf-8")
 
         req = urllib.request.Request(
@@ -174,12 +200,16 @@ def notify_make_task_status(task: Task) -> None:
         )
 
         with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
-            # Vi bryr oss ikke om body, men vi kan logge status for debugging
-            logging.info("Sent DONE-task %s to Make.com, status=%s", task.id, resp.status)
+            logging.info(
+                "Sent DONE-task %s to Make.com, status=%s",
+                task.id,
+                resp.status,
+            )
 
     except Exception as exc:  # noqa: BLE001
         # Viktig: aldri knekke API-et selv om Make.com er nede.
         logging.exception("Failed to notify Make.com for task %s: %s", task.id, exc)
+
 
 
 # ---------------- Task creation helper (Home Visite) ----------------
