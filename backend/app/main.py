@@ -516,6 +516,7 @@ def edit_task(
     if "reason" in payload and "body" not in payload:
         payload["body"] = payload.pop("reason")
 
+    # Ikke-admin har begrenset hva de kan endre
     if user.role != Role.ADMIN:
         if t.assignee_user_id != user.id and t.created_by != user.id:
             raise HTTPException(status_code=403, detail="Forbidden")
@@ -527,15 +528,44 @@ def edit_task(
                 detail=f"Fields not allowed for user: {sorted(disallowed)}",
             )
 
-    changed = {}
+    # --- Track endringer ---
+    prev_assignee = t.assignee_user_id
+    changed: dict[str, Any] = {}
+
     for k, v in payload.items():
         setattr(t, k, v)
         changed[k] = v
 
+    # --- Hvis admin endrer assignee via Edit/Save, speil /assign-logikken ---
+    if "assignee_user_id" in payload and user.role == Role.ADMIN:
+        new_assignee = payload["assignee_user_id"]
+
+        # Oppdater status på samme måte som /assign-endepunktet
+        if t.status in [TaskStatus.NEW, TaskStatus.REJECTED]:
+            t.status = TaskStatus.ASSIGNED
+            changed["status"] = t.status
+
+        evt = (
+            TaskEventType.ASSIGN
+            if prev_assignee is None or prev_assignee == new_assignee
+            else TaskEventType.REASSIGN
+        )
+        log_event(
+            db,
+            t,
+            user,
+            evt,
+            {"from": prev_assignee, "to": new_assignee},
+        )
+
     db.add(t)
     db.commit()
     db.refresh(t)
-    log_event(db, t, user, TaskEventType.EDIT, {"changed": changed})
+
+    # Logg generell EDIT hvis noe faktisk ble endret
+    if changed:
+        log_event(db, t, user, TaskEventType.EDIT, {"changed": changed})
+
     return t
 
 

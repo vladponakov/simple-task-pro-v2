@@ -71,13 +71,15 @@ export const API_EXT = {
    BLOCK: UTILITIES
    ================================================================= */
 const onlyDateStr = (d) => {
-  try {
-    const dt = new Date(d);
-    return isNaN(dt) ? null : dt.toISOString().slice(0, 10);
-  } catch {
-    return null;
-  }
+  if (!d) return null;
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return null;
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 };
+
 
 const fmtNO = (iso) =>
   iso

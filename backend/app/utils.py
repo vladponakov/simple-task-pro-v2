@@ -228,7 +228,13 @@ def create_home_visit_task_for_student(
     effective_assignee_id = assignee_user_id or actor.id
 
     # 4) due_at: hvis ikke satt, bruk nå
-    effective_due_at = due_at or datetime.utcnow()
+    if due_at is None:
+    # bruk "trygg" tid midt på dagen, så vi unngår timezone-hop
+        now = datetime.utcnow()
+        effective_due_at = now.replace(hour=10, minute=0, second=0, microsecond=0)
+    else:
+        effective_due_at = due_at
+
 
     # 5) Checklist default
     effective_checklist = checklist or []
