@@ -8,13 +8,13 @@ import secrets
 import urllib.request
 from datetime import datetime, date, timedelta
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import Task, TaskEvent, TaskEventType, User
+from .models import Task, TaskEvent, TaskEventType, User, Student, TaskStatus
 
 
 # ---------------- Password helpers ----------------
@@ -180,3 +180,86 @@ def notify_make_task_status(task: Task) -> None:
     except Exception as exc:  # noqa: BLE001
         # Viktig: aldri knekke API-et selv om Make.com er nede.
         logging.exception("Failed to notify Make.com for task %s: %s", task.id, exc)
+
+
+# ---------------- Task creation helper (Home Visite) ----------------
+
+
+def create_home_visit_task_for_student(
+    db: Session,
+    *,
+    student: Student,
+    actor: User,
+    body: str | None = None,
+    assignee_user_id: int | None = None,
+    due_at: datetime | None = None,
+    external_ref: str | None = None,
+    checklist: List[dict] | None = None,
+    # snapshot-felter – ikke kolonner i Task, men vi kan henge dem på objektet
+    attendance_pct: int | None = None,
+    last_absence_date: date | None = None,
+    last_absence_reason: str | None = None,
+    visit_notes: str | None = None,
+) -> Task:
+    """
+    Felles logikk for å opprette en 'Home Visite'-task for en elev.
+
+    Brukes både fra /api/batch/import_students, /api/tasks og seed.py.
+
+    - Tittel: alltid "Fornavn Etternavn" hvis mulig, ellers student.name
+    - Body/reason: innkommende body hvis satt, ellers "Home Visite"
+    - Assignee: innkommende assignee_user_id, ellers actor (typisk admin)
+    - due_at: innkommende due_at, ellers datetime.utcnow()
+    - status: alltid NEW ved opprettelse
+    """
+
+    # 1) Tittel: "FirstName LastName" hvis vi har det, ellers student.name
+    if getattr(student, "first_name", None) and getattr(student, "last_name", None):
+        title = f"{student.first_name} {student.last_name}"
+    else:
+        title = student.name
+
+    # 2) Reason/body: bruk innkommende hvis satt, ellers "Home Visite"
+    text_body = (body or "").strip()
+    if not text_body:
+        text_body = "Home Visite"
+
+    # 3) Fallback assignee: hvis ingen gitt, bruk actor som assignee
+    effective_assignee_id = assignee_user_id or actor.id
+
+    # 4) due_at: hvis ikke satt, bruk nå
+    effective_due_at = due_at or datetime.utcnow()
+
+    # 5) Checklist default
+    effective_checklist = checklist or []
+
+    # Viktig: snapshot-feltene finnes ikke som kolonner på Task,
+    # så de SENDES IKKE inn som keyword-arguments her.
+    task = Task(
+        student_id=student.id,
+        title=title,
+        body=text_body,
+        address=student.address,
+        status=TaskStatus.NEW,  # ev. TaskStatus.ASSIGNED hvis du vil ha det som default
+        assignee_user_id=effective_assignee_id,
+        created_by=actor.id,
+        due_at=effective_due_at,
+        checklist=effective_checklist,
+        external_ref=external_ref,
+    )
+
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    # Snapshot-feltene kan henges på objektet i minnet hvis du vil bruke dem i responses
+    if attendance_pct is not None:
+        setattr(task, "attendance_pct", attendance_pct)
+    if last_absence_date is not None:
+        setattr(task, "last_absence_date", last_absence_date)
+    if last_absence_reason is not None:
+        setattr(task, "last_absence_reason", last_absence_reason)
+    if visit_notes is not None:
+        setattr(task, "visit_notes", visit_notes)
+
+    return task

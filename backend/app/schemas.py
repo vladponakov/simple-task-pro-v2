@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from datetime import datetime, date
@@ -38,8 +37,10 @@ class UserBase(ORMModel):
     email: EmailStr
     role: Role
 
+
 class UserOut(UserBase):
     pass
+
 
 class UserCreate(BaseModel):
     name: str
@@ -47,7 +48,9 @@ class UserCreate(BaseModel):
     role: Role = Role.USER
     password: str = Field(min_length=4)
 
+
 # ---------------- Students & absences ----------------
+
 
 class StudentIn(BaseModel):
     """
@@ -76,6 +79,7 @@ class StudentIn(BaseModel):
     attendance_last_2_weeks: Optional[float] = None
     attendance_last_3_weeks: Optional[float] = None
     attendance_last_4_weeks: Optional[float] = None
+
 
 class StudentOut(ORMModel):
     id: int
@@ -136,8 +140,17 @@ class ChecklistItem(BaseModel):
 
 
 class TaskIn(BaseModel):
+    """
+    Input når man oppretter en Task.
+
+    NB:
+    - title blir ignorert i backend ved opprettelse; vi setter alltid tittel fra Student
+      (f.eks. "FirstName LastName").
+    - body brukes som "reason" hvis satt, ellers blir det "Home Visite" i utils.create_home_visit_task_for_student.
+    """
+
     student_id: int
-    title: str
+    title: Optional[str] = None  # gjøres valgfri, backend setter tittel selv
 
     body: Optional[str] = None
     address: Optional[str] = None
@@ -145,7 +158,7 @@ class TaskIn(BaseModel):
     due_at: Optional[datetime] = None
     assignee_user_id: Optional[int] = None
 
-    checklist: List[ChecklistItem] = []
+    checklist: List[ChecklistItem] = Field(default_factory=list)
     external_ref: Optional[str] = None
 
     # Snapshot fields for the Home Visit use case (optional)
@@ -164,6 +177,7 @@ class TaskOut(TaskIn, ORMModel):
     completed_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     student_admission_number: Optional[str] = None
+
 
 class TaskEdit(BaseModel):
     title: Optional[str] = None
@@ -207,6 +221,7 @@ class HistoryItem(BaseModel):
     note: Optional[str] = None
     reported_by: Optional[str] = None
 
+
 class DoneExportItem(BaseModel):
     """
     Brukes av /api/batch/export_done.
@@ -216,7 +231,8 @@ class DoneExportItem(BaseModel):
     admission_number: str
     visited_today: str = "Done"
     done_at: datetime
-    
+
+
 class BatchSettingsOut(BaseModel):
     rollover_hour: int
 

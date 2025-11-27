@@ -14,7 +14,7 @@ from app.models import (
     TaskEventType,
     User,
 )
-from app.utils import hash_password, log_event
+from app.utils import hash_password, log_event, create_home_visit_task_for_student
 from app.config import settings
 
 # -------------------------------------------------------------------
@@ -40,7 +40,7 @@ STUDENT_ROWS = [
     {'year': 9, 'first_name': 'Shohaib', 'last_name': 'Agha', 'gender': 'M', 'address': 'Flat 1, 395 Montagu Road, London, N9 0HP', 'contact_name': 'Agha', 'contact_relationship': 'Mother', 'contact_phone': '07700 900016', 'absent_today': True, 'attendance_ytd': 85.71, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 60.0, 'attendance_last_3_weeks': 73.33, 'attendance_last_4_weeks': 80.0},
     {'year': 9, 'first_name': 'Asif', 'last_name': 'Ahaz', 'gender': 'M', 'address': '179 Hertford Road, London, N9 7EP', 'contact_name': 'Ahaz', 'contact_relationship': 'Mother', 'contact_phone': '07700 900017', 'absent_today': True, 'attendance_ytd': 91.84, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 94.74, 'attendance_last_3_weeks': 82.76, 'attendance_last_4_weeks': 82.05},
     {'year': 9, 'first_name': 'DJ', 'last_name': 'Ahmed', 'gender': 'F', 'address': '179 Hertford Road, London, N9 7EP', 'contact_name': 'Ahmed', 'contact_relationship': 'Mother', 'contact_phone': '07700 900018', 'absent_today': True, 'attendance_ytd': 91.84, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 94.74, 'attendance_last_3_weeks': 82.76, 'attendance_last_4_weeks': 82.05},
-    {'year': 8, 'first_name': 'Wasim', 'last_name': 'Ahmed', 'gender': 'F', 'address': '38 St. Mary\'s Road, London, N9 8NJ', 'contact_name': 'Ahmed', 'contact_relationship': 'Mother', 'contact_phone': '07700 900019', 'absent_today': True, 'attendance_ytd': 100.0, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 90.0, 'attendance_last_3_weeks': 93.33, 'attendance_last_4_weeks': 95.0},
+    {'year': 8, 'first_name': 'Wasim', 'last_name': 'Ahmed', 'gender': 'F', 'address': "38 St. Mary's Road, London, N9 8NJ", 'contact_name': 'Ahmed', 'contact_relationship': 'Mother', 'contact_phone': '07700 900019', 'absent_today': True, 'attendance_ytd': 100.0, 'attendance_last_week': 100.0, 'attendance_last_2_weeks': 90.0, 'attendance_last_3_weeks': 93.33, 'attendance_last_4_weeks': 95.0},
     {'year': 9, 'first_name': 'Asif', 'last_name': 'Ahmoud', 'gender': 'F', 'address': '391A Fore Street, London, N9 0NR', 'contact_name': 'Ahmoud', 'contact_relationship': 'Mother', 'contact_phone': '07700 900020', 'absent_today': True, 'attendance_ytd': 73.47, 'attendance_last_week': 0.0, 'attendance_last_2_weeks': 0.0, 'attendance_last_3_weeks': 6.67, 'attendance_last_4_weeks': 30.0},
     {'year': 10, 'first_name': 'Jason', 'last_name': 'Air', 'gender': 'M', 'address': '58 Hennessy Road, London, N9 0XJ', 'contact_name': 'Air', 'contact_relationship': 'Mother', 'contact_phone': '07700 900021', 'absent_today': True, 'attendance_ytd': 36.73, 'attendance_last_week': 0.0, 'attendance_last_2_weeks': 0.0, 'attendance_last_3_weeks': 6.67, 'attendance_last_4_weeks': 25.0},
     {'year': 10, 'first_name': 'Matthew', 'last_name': 'Alderson', 'gender': 'F', 'address': '27 Oxford Road, London, N9 0LY', 'contact_name': 'Alderson', 'contact_relationship': 'Father', 'contact_phone': '07700 900022', 'absent_today': True, 'attendance_ytd': 95.92, 'attendance_last_week': 80.0, 'attendance_last_2_weeks': 80.0, 'attendance_last_3_weeks': 86.67, 'attendance_last_4_weeks': 90.0},
@@ -121,26 +121,30 @@ def seed_minimal(db: Session) -> None:
     tasks: list[Task] = []
     for i, s in enumerate(students, start=1):
         assignee = ulf if i % 2 == 1 else una
-        task = Task(
-            student_id=s.id,
-            title=f"Home visit for {s.name}",
-            body="Initial visit",
-            address=s.address,
-            status=TaskStatus.ASSIGNED,
-            assignee_user_id=assignee.id,
-            created_by=admin.id,
-            due_at=datetime.combine(today, datetime.min.time()).replace(
-                hour=9 + (i % 5)
-            ),
-            checklist=[{"text": "Talk to guardian", "done": False}],
-        )
-        db.add(task)
-        tasks.append(task)
 
-    db.commit()
-    for t in tasks:
-        db.refresh(t)
-        log_event(db, t, admin, TaskEventType.EDIT, {"create": True})
+        due_dt = datetime.combine(
+            today,
+            datetime.min.time(),
+        ).replace(hour=9 + (i % 5))
+
+        # Bruk samme helper som API/import:
+        # - tittel = "FirstName LastName" / student.name
+        # - body = "Home Visite" (default)
+        # - status = NEW
+        # - assignee = Ulf / Una
+        task = create_home_visit_task_for_student(
+            db,
+            student=s,
+            actor=admin,                      # admin er "created_by"
+            body=None,                        # lar helper sette "Home Visite"
+            assignee_user_id=assignee.id,
+            due_at=due_dt,
+            external_ref=None,
+            checklist=[{"text": "Talk to guardian", "done": False}],
+            attendance_pct=s.attendance_ytd,
+        )
+        tasks.append(task)
+        log_event(db, task, admin, TaskEventType.EDIT, {"create": True})
 
     print(f"[SEED] Minimal: tasks={len(tasks)}")
 

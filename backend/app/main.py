@@ -54,6 +54,7 @@ from app.utils import (
     restore,
     soft_delete,
     notify_make_task_status,
+    create_home_visit_task_for_student,
 )
 
 SNAPSHOT_EXCLUDE_FIELDS = {
@@ -418,13 +419,35 @@ def create_task(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    payload = data.model_dump(exclude=SNAPSHOT_EXCLUDE_FIELDS, exclude_unset=True)
-    t = Task(**payload, status=TaskStatus.NEW, created_by=user.id)
-    db.add(t)
-    db.commit()
-    db.refresh(t)
+    # 1) Finn studenten
+    student = (
+        db.query(Student)
+        .filter(Student.id == data.student_id)
+        .first()
+    )
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    # 2) Opprett task via felles helper
+    t = create_home_visit_task_for_student(
+        db,
+        student=student,
+        actor=user,                         # den innloggede adminen
+        body=data.body,                     # brukes hvis satt, ellers "Home Visite"
+        assignee_user_id=data.assignee_user_id,
+        due_at=data.due_at,
+        external_ref=data.external_ref,
+        checklist=data.checklist,
+        attendance_pct=data.attendance_pct,
+        last_absence_date=data.last_absence_date,
+        last_absence_reason=data.last_absence_reason,
+        visit_notes=data.visit_notes,
+    )
+
+    # 3) Logg "create"-event (helperen gjør ikke dette)
     log_event(db, t, user, TaskEventType.EDIT, {"create": True})
     return t
+
 
 
 @app.get("/api/tasks", response_model=List[TaskOut])
@@ -971,6 +994,7 @@ def batch_import_students(
         out.append(s)
 
         # --- Hvis eleven er markert som absent today → lag dagens task ---
+                # --- Hvis eleven er markert som absent today → lag dagens task ---
         if s.absent_today:
             existing = (
                 db.query(Task)
@@ -989,16 +1013,22 @@ def batch_import_students(
                     datetime.min.time(),
                 ).replace(hour=10)
 
-                t = Task(
-                    student_id=s.id,
-                    title="Visit student",
-                    address=s.address,
-                    status=TaskStatus.NEW,
+                # Bruk felles helper:
+                # - tittel = "FirstName LastName"
+                # - body = "Home Visite"
+                # - assignee = actor (admin) som fallback
+                # - status = NEW
+                create_home_visit_task_for_student(
+                    db,
+                    student=s,
+                    actor=actor,              # admin som kjører batch’en
+                    body=None,                # lar helper sette "Home Visite"
+                    assignee_user_id=None,    # lar helper bruke actor.id (admin)
                     due_at=due_dt,
-                    created_by=actor.id,
+                    external_ref=s.admission_number,
                     checklist=[],
+                    # snapshot-felter kan fylles senere ved behov
                 )
-                db.add(t)
 
     db.commit()
     for s in out:
