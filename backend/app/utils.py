@@ -130,73 +130,54 @@ def notify_make_task_status(task: Task) -> None:
     Kalles når en oppgave går til DONE.
     Sender et POST-kall til Make.com webhook.
 
-    Nå sender vi både "task" OG "student" i payloaden,
-    slik at du kan bruke f.eks. {{1.student.admission_number}} i Make.
+    Krever bare at MAKE_WEBHOOK_URL er satt.
+    MAKE_WEBHOOK_API_KEY er valgfri (brukes bare hvis konfigurert).
     """
-    url = settings.MAKE_WEBHOOK_URL
-    api_key = settings.MAKE_WEBHOOK_API_KEY
+    url = getattr(settings, "MAKE_WEBHOOK_URL", None)
+    api_key = getattr(settings, "MAKE_WEBHOOK_API_KEY", None)
 
-    if not url or not api_key:
-        # Ikke konfigurert → bare logg og returner stille
-        logging.debug("Make.com webhook ikke konfigurert – hopper over notify.")
+    if not url:
+        logging.debug("Make.com webhook URL ikke satt – hopper over notify.")
         return
 
     try:
         updated_at = task.updated_at or datetime.utcnow()
 
-        # Prøv å hente student-relasjonen (lazy-load via SQLAlchemy)
-        student = getattr(task, "student", None)
-
         payload: Dict[str, Any] = {
-            "task_id": task.id,
-            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
-            "updated_at": updated_at.isoformat(),
+            "event": "task_done",
+            "source": "taskpro-app",
+            "version": "1.0",
             "task": {
                 "id": task.id,
                 "student_id": task.student_id,
                 "title": task.title,
+                "status": task.status.value
+                if hasattr(task.status, "value")
+                else str(task.status),
+                "due_at": task.due_at.isoformat() if task.due_at else None,
+                "created_at": task.created_at.isoformat() if task.created_at else None,
+                "completed_at": task.completed_at.isoformat()
+                if task.completed_at
+                else None,
                 "address": task.address,
-                "body": task.body,
+                "notes": task.body,
                 "assignee_user_id": task.assignee_user_id,
-                "status": task.status.value if hasattr(task.status, "value") else str(task.status),
-                "updated_at": updated_at.isoformat(),
-                "completed_at": task.completed_at.isoformat() if task.completed_at else None,
                 "external_ref": task.external_ref,
                 "checklist": task.checklist or [],
             },
         }
 
-        # ➕ NYTT: pakk inn student-detaljer hvis de finnes
-        if student is not None:
-            payload["student"] = {
-                "id": student.id,
-                "admission_number": student.admission_number,
-                "year": student.student_class,
-                "first_name": student.first_name,
-                "last_name": student.last_name,
-                "gender": student.gender,
-                "address": student.address,
-                "contact_name": student.contact_name,
-                "contact_relationship": student.contact_relationship,
-                "contact_phone": student.contact_phone,
-                "absent_today": bool(getattr(student, "absent_today", False)),
-                "attendance_ytd": student.attendance_ytd,
-                "attendance_last_week": student.attendance_last_week,
-                "attendance_last_2_weeks": student.attendance_last_2_weeks,
-                "attendance_last_3_weeks": student.attendance_last_3_weeks,
-                "attendance_last_4_weeks": student.attendance_last_4_weeks,
-            }
-
         data_bytes = json.dumps(payload, default=str).encode("utf-8")
+
+        headers = {"Content-Type": "application/json"}
+        if api_key:  # bare hvis du faktisk bruker den i Make
+            headers["x-make-apikey"] = api_key
 
         req = urllib.request.Request(
             url,
             data=data_bytes,
             method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "x-make-apikey": api_key,
-            },
+            headers=headers,
         )
 
         with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
@@ -207,9 +188,8 @@ def notify_make_task_status(task: Task) -> None:
             )
 
     except Exception as exc:  # noqa: BLE001
-        # Viktig: aldri knekke API-et selv om Make.com er nede.
+        # Viktig: ikke knekke API-et selv om Make.com er nede.
         logging.exception("Failed to notify Make.com for task %s: %s", task.id, exc)
-
 
 
 # ---------------- Task creation helper (Home Visite) ----------------
