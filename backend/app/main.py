@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import func, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
@@ -263,7 +264,18 @@ async def no_cache_index(request: Request, call_next):
 async def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     asyncio.create_task(rollover_scheduler_loop())
+   # --- MINI-MIGRERING FOR PROD: legg til rollover_timezone hvis den mangler ---
+    with engine.connect() as conn:
+        try:
+            conn.execute(
+                text("ALTER TABLE app_settings ADD COLUMN rollover_timezone VARCHAR(100)")
+            )
+            conn.commit()
+        except OperationalError:
+            # Kolonnen finnes allerede – helt fint lokalt / etter første deploy
+            pass
 
+    asyncio.create_task(rollover_scheduler_loop())
 
 # -------------------- Auth --------------------
 
