@@ -1,20 +1,28 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
-/* ------------------------------------------------------------------ */
-/* API (prod = same-origin; dev = VITE_API_BASE or localhost)         */
-/* ------------------------------------------------------------------ */
+/* ================================================================
+   BLOCK: API_HELPERS
+   ================================================================= */
 const isProd =
   typeof window !== "undefined" && !window.location.origin.includes("localhost");
-const API_BASE = isProd ? "" : (import.meta.env?.VITE_API_BASE ?? "http://localhost:8000");
+const API_BASE = isProd
+  ? ""
+  : import.meta.env?.VITE_API_BASE ?? "http://localhost:8000";
 
 const API = (path, opts = {}) => {
-  // Always prefix /api to be safe (supports callers that pass "tasks" or "/api/tasks")
-  const p = path.startsWith("/api") ? path : `/api${path.startsWith("/") ? "" : "/"}${path}`;
+  const p = path.startsWith("/api")
+    ? path
+    : `/api${path.startsWith("/") ? "" : "/"}${path}`;
+
+  const authToken = localStorage.getItem("auth_token");
+  const xUser = localStorage.getItem("x_user");
+
   return fetch(`${API_BASE}${p}`, {
     headers: {
-      "X-User": localStorage.getItem("user") || "paddy",
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      ...(xUser ? { "X-User": xUser } : {}),
       "Content-Type": "application/json",
       ...(opts.headers || {}),
     },
@@ -22,36 +30,63 @@ const API = (path, opts = {}) => {
     ...opts,
   }).then(async (r) => {
     if (!r.ok) {
-      try {
-        const j = await r.json();
-        if (j?.detail) throw new Error(j.detail);
-      } catch {}
-      throw new Error((await r.text()) || "Request failed");
+  let message = "Request failed";
+  try {
+    const ct = r.headers.get("content-type") || "";
+    if (ct.includes("application/json")) {
+      const j = await r.json();
+      if (j?.detail) {
+        message = j.detail;
+      } else if (j?.message) {
+        message = j.message;
+      }
+    } else {
+      const t = await r.text();
+      if (t) message = t;
     }
+  } catch {
+    // hvis vi ikke klarer å lese body, beholder vi default message
+  }
+  throw new Error(message);
+}
+
     return r.json();
   });
 };
 
-/* ------------------------------------------------------------------ */
-/* Utils                                                              */
-/* ------------------------------------------------------------------ */
-const onlyDateStr = (d) => {
-  try {
-    const dt = new Date(d);
-    return isNaN(dt) ? null : dt.toISOString().slice(0, 10);
-  } catch {
-    return null;
-  }
+// Make.com prep (not used yet, but ready)
+export const API_EXT = {
+  createTask: (data) =>
+    API("/api/tasks", { method: "POST", body: JSON.stringify(data) }),
+  getDoneTasks: (since) =>
+    API(
+      `/api/tasks?status=Done${
+        since ? `&updated_after=${encodeURIComponent(since)}` : ""
+      }`
+    ),
 };
+/* =========================== END BLOCK =========================== */
+
+/* ================================================================
+   BLOCK: UTILITIES
+   ================================================================= */
+const onlyDateStr = (d) => {
+  if (!d) return null;
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return null;
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
 
 const fmtNO = (iso) =>
   iso
-    ? new Date(iso).toLocaleString("no-NO", {
+    ? new Date(iso).toLocaleDateString("no-NO", {
         day: "2-digit",
         month: "2-digit",
         year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
       })
     : "-";
 
@@ -77,6 +112,24 @@ function buildSmartRouteUrl(addresses) {
   return `https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${dest}&waypoints=${waypoints}`;
 }
 
+// ✅ Embed API variant – requires VITE_GOOGLE_MAPS_EMBED_KEY
+function buildSmartRouteEmbedUrl(addresses) {
+  const key = import.meta.env?.VITE_GOOGLE_MAPS_EMBED_KEY;
+  if (!key) return null;
+  if (!addresses || addresses.length === 0) return null;
+
+  const enc = (s) => encodeURIComponent(s || "London");
+  const origin = enc(addresses[0]);
+  const destination = enc(addresses[addresses.length - 1]);
+  const waypoints = addresses.slice(1, -1).map(enc).join("|");
+
+  let url = `https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${origin}&destination=${destination}&mode=driving`;
+  if (waypoints) {
+    url += `&waypoints=${waypoints}`;
+  }
+  return url;
+}
+
 const titleCase = (s) =>
   (s || "")
     .toString()
@@ -85,7 +138,7 @@ const titleCase = (s) =>
 
 const getReason = (t) =>
   (
-    t?.body ??
+    t?.body ?? // unified reason field
     t?.reason ??
     t?.reject_reason ??
     t?.rejection_reason ??
@@ -101,59 +154,106 @@ const USERS = [
   { id: 3, name: "Una (User 2)" },
 ];
 
-/* ------------------------------------------------------------------ */
-/* Login (demo)                                                       */
-/* ------------------------------------------------------------------ */
-function Login({ onDemoLogin, onGoogleLogin }) {
-  const USERS_LOGIN = [
-    { id: "paddy", label: "Admin (paddy)" },
-    { id: "ulf", label: "User 1 (Ulf)" },
-    { id: "una", label: "User 2 (Una)" },
-  ];
-  const DEMO_PW = { paddy: "admin123", ulf: "user1", una: "user2" };
+/* =========================== END BLOCK =========================== */
 
-  const [who, setWho] = useState("paddy");
+/* ================================================================
+   BLOCK: LOGIN
+   ================================================================= */
+
+function Login() {
+  const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const login = () => {
-    if ((DEMO_PW[who] || "") !== pw.trim()) {
-      alert("Demo creds → paddy:admin123, ulf:user1, una:user2");
+  const login = async () => {
+    const emailTrimmed = email.trim().toLowerCase();
+    const pwTrimmed = pw.trim();
+
+    if (!emailTrimmed || !pwTrimmed) {
+      alert("Please enter email and password.");
       return;
     }
-    onDemoLogin(who);
-    window.location.replace("/");
+
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: emailTrimmed, password: pwTrimmed }),
+      });
+
+      if (!res.ok) {
+        let detail = "Login failed";
+        try {
+          const j = await res.json();
+          if (j?.detail) detail = j.detail;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(detail);
+      }
+
+      const data = await res.json();
+
+      // token fra backend – vi støtter flere navn
+      const token =
+        data.token ||
+        data.access_token ||
+        data.auth_token ||
+        data.jwt ||
+        null;
+
+      // bruker-objekt fra backend
+      const user =
+        data.user ||
+        {
+          id: data.id,
+          name: data.name || emailTrimmed,
+          email: data.email || emailTrimmed,
+          role: data.role || "User",
+        };
+
+      if (token) {
+        localStorage.setItem("auth_token", token);
+      } else {
+        localStorage.removeItem("auth_token");
+      }
+
+      localStorage.setItem("current_user", JSON.stringify(user));
+      localStorage.setItem("x_user", user.email || emailTrimmed);
+
+      window.location.replace("/");
+    } catch (e) {
+      alert(e?.message || "Login failed");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div className="auth-wrap">
-      <div className="auth-card">
+      <div className="auth-card glass">
         <div className="brand-top">
-          <div className="brand-title">Simple Task Pro</div>
+          <div className="brand-title">Visit Task Pro</div>
           <div className="brand-sub">Sign in to continue</div>
         </div>
 
         <div className="field">
-          <label className="label">User</label>
+          <label className="label">Email</label>
           <div className="input-wrap">
-            <span className="prefix">👤</span>
-            <select
-              className="select bare"
-              value={who}
-              onChange={(e) => setWho(e.target.value)}
-            >
-              {USERS_LOGIN.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.label}
-                </option>
-              ))}
-            </select>
+            <input
+              className="input bare"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="your@email.com"
+            />
           </div>
         </div>
 
         <div className="field">
           <label className="label">Password</label>
           <div className="input-wrap">
-            <span className="prefix">🔒</span>
             <input
               type="password"
               className="input bare"
@@ -164,36 +264,69 @@ function Login({ onDemoLogin, onGoogleLogin }) {
           </div>
         </div>
 
-        <button className="btn btn-primary wide" onClick={login}>
-          Sign in
+        <button
+          className="btn btn-primary wide"
+          onClick={login}
+          disabled={loading}
+        >
+          {loading ? "Signing in..." : "Sign in"}
         </button>
-
-        <div className="divider">or</div>
-        <button className="btn btn-google wide" onClick={onGoogleLogin}>
-          <span className="gdot red" /> <span className="gdot yellow" />{" "}
-          <span className="gdot green" /> Continue with Google
-        </button>
-
-        <div className="auth-demo">
-          Demo creds → <b>paddy:admin123</b>, <b>ulf:user1</b>, <b>una:user2</b>
-        </div>
       </div>
     </div>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Header + Drawer                                                    */
-/* ------------------------------------------------------------------ */
-function Header({ onOpenSmartRoute, todaysCount, onCreate }) {
+/* =========================== END BLOCK =========================== */
+
+/* ================================================================
+   BLOCK: HEADER + DRAWER
+   ================================================================= */
+function Header({
+  onOpenSmartRoute,
+  todaysCount,
+  onCreate,
+  isAdmin,
+  onOpenSettings,
+}) {
   const [me, setMe] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  useEffect(() => {
-    API("/api/me").then(setMe).catch(() => {});
+   useEffect(() => {
+    API("/api/me")
+      .then((data) => {
+        if (data && (data.name || data.email)) {
+          setMe(data);
+        } else {
+          const raw = localStorage.getItem("current_user");
+          if (raw) {
+            try {
+              setMe(JSON.parse(raw));
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      })
+      .catch(() => {
+        const raw = localStorage.getItem("current_user");
+        if (raw) {
+          try {
+            setMe(JSON.parse(raw));
+          } catch {
+            /* ignore */
+          }
+        }
+      });
   }, []);
 
-  const initials = (me?.name || "User")
+
+  useEffect(() => {
+    const open = () => setDrawerOpen(true);
+    document.addEventListener("open-drawer", open);
+    return () => document.removeEventListener("open-drawer", open);
+  }, []);
+
+  const initials = (me?.name || me?.email || "User")
     .split(" ")
     .map((s) => s[0])
     .filter(Boolean)
@@ -211,14 +344,15 @@ function Header({ onOpenSmartRoute, todaysCount, onCreate }) {
         >
           <span />
         </button>
-        <div className="app-title">Simple Task Pro</div>
+        <div className="app-title">Visit Task Pro</div>
         <div className="spacer" />
         <button
-          className="btn btn-primary"
+          className="btn btn-primary pill"
           style={{ marginLeft: 8 }}
           onClick={onOpenSmartRoute}
         >
-          Smart Route (today){todaysCount ? ` • ${todaysCount}` : ""}
+          Smart Route
+          {todaysCount ? ` • ${todaysCount}` : ""}
         </button>
       </div>
 
@@ -230,10 +364,10 @@ function Header({ onOpenSmartRoute, todaysCount, onCreate }) {
         className={drawerOpen ? "drawer open" : "drawer"}
         onClick={(e) => e.stopPropagation()}
       >
-        <header>
+        <header className="drawer-header">
           <strong>Menu</strong>
-          <button className="btn" onClick={() => setDrawerOpen(false)}>
-            Close
+          <button className="btn ghost" onClick={() => setDrawerOpen(false)}>
+            ✕
           </button>
         </header>
 
@@ -246,31 +380,36 @@ function Header({ onOpenSmartRoute, todaysCount, onCreate }) {
         </div>
 
         <div className="menu">
+          {isAdmin && (
+            <button
+              className="mitem mitem--action"
+              onClick={() => {
+                setDrawerOpen(false);
+                onCreate();
+              }}
+            >
+              + New task
+            </button>
+          )}
+
+          {isAdmin && (
+            <button
+              className="mitem"
+              onClick={() => {
+                setDrawerOpen(false);
+                onOpenSettings();
+              }}
+            >
+              Settings
+            </button>
+          )}
+
           <button
-            className="mitem"
+            className="mitem mitem--danger"
             onClick={() => {
-              setDrawerOpen(false);
-              onCreate();
-            }}
-          >
-            + New Task
-          </button>
-          <button
-            className="mitem"
-            onClick={() => {
-              setDrawerOpen(false);
-              onOpenSmartRoute();
-            }}
-          >
-            Open Smart Route{todaysCount ? ` • ${todaysCount}` : ""}
-          </button>
-          <button className="mitem" onClick={() => alert("Settings coming soon")}>
-            Settings
-          </button>
-          <button
-            className="mitem warn"
-            onClick={() => {
-              localStorage.removeItem("user");
+              localStorage.removeItem("auth_token");
+              localStorage.removeItem("current_user");
+              localStorage.removeItem("x_user");
               window.location.replace("/login");
             }}
           >
@@ -281,10 +420,330 @@ function Header({ onOpenSmartRoute, todaysCount, onCreate }) {
     </>
   );
 }
+/* =========================== END BLOCK =========================== */
 
-/* ------------------------------------------------------------------ */
-/* Comments                                                           */
-/* ------------------------------------------------------------------ */
+/* ================================================================
+   BLOCK: SETTINGS_MODAL
+   ================================================================= */
+function SettingsModal({ onClose }) {
+  const [tab, setTab] = useState("batch"); // batch | students | users
+
+  const [students, setStudents] = useState([]);
+  const [users, setUsers] = useState([]);
+
+  const [studentName, setStudentName] = useState("");
+  const [studentClass, setStudentClass] = useState("");
+  const [studentAddress, setStudentAddress] = useState("");
+  const [deleteStudentId, setDeleteStudentId] = useState("");
+
+ const [userName, setUserName] = useState("");
+const [userEmail, setUserEmail] = useState("");
+const [userPassword, setUserPassword] = useState("");   // NEW
+const [userRole, setUserRole] = useState("USER");
+const [deleteUserId, setDeleteUserId] = useState("");
+
+const [batchSettings, setBatchSettings] = useState(() => {
+  try {
+    const raw = localStorage.getItem("batchSettings");
+    if (!raw) {
+      return { rolloverAt: "17:00" };
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      rolloverAt: parsed.rolloverAt || "17:00",
+    };
+  } catch {
+    return { rolloverAt: "17:00" };
+  }
+});
+
+
+
+  const load = async () => {
+  try {
+    const [st, us, batch] = await Promise.all([
+      API("/api/students"),
+      API("/api/users"),
+      API("/api/settings/batch"),
+    ]);
+    setStudents(st || []);
+    setUsers(us || []);
+    if (batch && typeof batch.rollover_hour === "number") {
+      const hh = String(batch.rollover_hour).padStart(2, "0");
+      setBatchSettings({ rolloverAt: `${hh}:00` });
+    }
+  } catch (e) {
+    console.error("Failed to load settings data", e);
+  }
+};
+
+
+  useEffect(() => {
+    const onEsc = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onEsc);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onEsc);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  const saveBatchSettings = async () => {
+  try {
+    const [hh] = batchSettings.rolloverAt.split(":");
+    const hour = parseInt(hh, 10);
+    if (Number.isNaN(hour) || hour < 0 || hour > 23) {
+      alert("Please enter a valid hour between 00:00 and 23:59");
+      return;
+    }
+
+    await API("/api/settings/batch", {
+      method: "POST",
+      body: JSON.stringify({ rollover_hour: hour }),
+    });
+
+    localStorage.setItem("batchSettings", JSON.stringify(batchSettings));
+    alert("Rollover time updated – not-done tasks will be moved at this time.");
+  } catch (e) {
+    alert(e?.message || "Failed to save batch settings");
+  }
+};
+
+
+  const createStudent = async () => {
+    if (!studentName.trim()) {
+      alert("Student name is required");
+      return;
+    }
+    try {
+      await API("/api/students", {
+        method: "POST",
+        body: JSON.stringify({
+          name: studentName.trim(),
+          student_class: studentClass.trim() || null,
+          address: studentAddress.trim() || null,
+        }),
+      });
+      setStudentName("");
+      setStudentClass("");
+      setStudentAddress("");
+      const st = await API("/api/students");
+      setStudents(st || []);
+      alert("Student created");
+    } catch (e) {
+      alert(e?.message || "Failed to create student");
+    }
+  };
+
+  const deleteStudent = async () => {
+    if (!deleteStudentId) return;
+    if (!confirm(`Delete student #${deleteStudentId}?`)) return;
+    try {
+      await API(`/api/students/${deleteStudentId}`, { method: "DELETE" });
+      const st = await API("/api/students");
+      setStudents(st || []);
+      setDeleteStudentId("");
+      alert("Student deleted");
+    } catch (e) {
+      alert(e?.message || "Failed to delete student");
+    }
+  };
+
+const createUser = async () => {
+  if (!userName.trim() || !userEmail.trim() || !userPassword.trim()) {
+    alert("Name, email and password are required");
+    return;
+  }
+
+  // very simple email validation to avoid 422 from backend
+  if (!userEmail.includes("@") || !userEmail.includes(".")) {
+    alert("Please enter a valid email address (e.g. user@example.com)");
+    return;
+  }
+
+  // Map UI role ("USER"/"ADMIN") to backend enum ("User"/"Admin")
+  const backendRole =
+    userRole === "ADMIN" || userRole === "Admin" ? "Admin" : "User";
+
+  try {
+    await API("/api/users", {
+      method: "POST",
+      body: JSON.stringify({
+        name: userName.trim(),
+        email: userEmail.trim().toLowerCase(),
+        role: backendRole,
+        password: userPassword.trim(),
+      }),
+    });
+
+    setUserName("");
+    setUserEmail("");
+    setUserPassword("");
+
+    const us = await API("/api/users");
+    setUsers(us || []);
+    alert("User created");
+  } catch (e) {
+    alert(e?.message || "Failed to create user");
+  }
+};
+
+
+
+
+  const deleteUser = async () => {
+    if (!deleteUserId) return;
+    if (!confirm(`Delete user #${deleteUserId}?`)) return;
+    try {
+      await API(`/api/users/${deleteUserId}`, { method: "DELETE" });
+      const us = await API("/api/users");
+      setUsers(us || []);
+      setDeleteUserId("");
+      alert("User deleted");
+    } catch (e) {
+      alert(e?.message || "Failed to delete user");
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="modal"
+        style={{ maxWidth: 520 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3>Settings</h3>
+
+        <div className="chipbar">
+          <button
+            className={`chip ${tab === "batch" ? "active" : ""}`}
+            onClick={() => setTab("batch")}
+          >
+            Batch times
+          </button>
+          <button
+            className={`chip ${tab === "users" ? "active" : ""}`}
+            onClick={() => setTab("users")}
+          >
+            Users
+          </button>
+        </div>
+
+        {tab === "batch" && (
+  <>
+    <p className="help">
+  This time controls when all not-done tasks for today will be moved
+  automatically to tomorrow (same as “Move to next day”).
+</p>
+
+<label className="label">Move not-done tasks at</label>
+<select
+  className="input"
+  value={batchSettings.rolloverAt}
+  onChange={(e) => setBatchSettings((s) => ({ ...s, rolloverAt: e.target.value }))}
+>
+  {Array.from({ length: 24 }).map((_, h) => {
+    const label = `${String(h).padStart(2, "0")}:00`;
+    return (
+      <option key={h} value={label}>
+        {label}
+      </option>
+    );
+  })}
+</select>
+
+
+
+    <div className="btns" style={{ marginTop: 12 }}>
+      <button className="btn" onClick={onClose}>
+        Close
+      </button>
+      <button className="btn btn-primary" onClick={saveBatchSettings}>
+        Save
+      </button>
+    </div>
+  </>
+)}
+
+
+        {tab === "users" && (
+          <>
+            <label className="label">Name</label>
+<input
+  className="input"
+  value={userName}
+  onChange={(e) => setUserName(e.target.value)}
+/>
+
+<label className="label">Email</label>
+<input
+  className="input"
+  value={userEmail}
+  onChange={(e) => setUserEmail(e.target.value)}
+/>
+
+<label className="label">Password</label>
+<input
+  className="input"
+  type="password"
+  value={userPassword}
+  onChange={(e) => setUserPassword(e.target.value)}
+/>
+
+<label className="label">Role</label>
+<select
+  className="select"
+  value={userRole}
+  onChange={(e) => setUserRole(e.target.value)}
+>
+  <option value="USER">User</option>
+  <option value="ADMIN">Admin</option>
+</select>
+
+
+            <div className="btns" style={{ marginTop: 8 }}>
+              <button className="btn" onClick={createUser}>
+                Create user
+              </button>
+            </div>
+
+            <hr style={{ margin: "16px 0" }} />
+
+            <label className="label">Delete user</label>
+            <select
+              className="select"
+              value={deleteUserId}
+              onChange={(e) => setDeleteUserId(e.target.value)}
+            >
+              <option value="">Select…</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  #{u.id} {u.name} ({u.role})
+                </option>
+              ))}
+            </select>
+
+            <div className="btns" style={{ marginTop: 8 }}>
+              <button className="btn btn-danger" onClick={deleteUser}>
+                Delete selected
+              </button>
+            </div>
+
+            <div className="meta" style={{ marginTop: 8, fontSize: 12 }}>
+              Total users: {users.length}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+/* =========================== END BLOCK =========================== */
+
+/* ================================================================
+   BLOCK: COMMENTS / HISTORY / CREATE / EDIT
+   ================================================================= */
 function TaskComments({ taskId }) {
   const [comments, setComments] = useState([]);
   const [text, setText] = useState("");
@@ -314,12 +773,12 @@ function TaskComments({ taskId }) {
       <strong>Comments</strong>
       <ul style={{ marginTop: 8 }}>
         {comments.map((c) => (
-          <li key={c.id} style={{ marginBottom: 6, color: "var(--muted)" }}>
-            <span style={{ opacity: 0.8 }}>{c.author || "User"}</span>{" "}
-            <span style={{ opacity: 0.7 }}>
-              • {new Date(c.created_at).toLocaleString("no-NO")}
+          <li key={c.id} className="comment-row">
+            <span className="comment-author">{c.author || "User"}</span>
+            <span className="comment-date">
+              {new Date(c.created_at).toLocaleString("no-NO")}
             </span>
-            <div>{c.text}</div>
+            <div className="comment-text">{c.text}</div>
           </li>
         ))}
       </ul>
@@ -338,9 +797,162 @@ function TaskComments({ taskId }) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Create Task (modal)                                                */
-/* ------------------------------------------------------------------ */
+function HistoryModal({ studentId, onClose }) {
+  const [student, setStudent] = useState(null);
+
+  // Hent alle elever og finn den ene vi trenger
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const allStudents = await API("/api/students");
+        if (cancelled) return;
+
+        const sid = Number(studentId);
+        const s = (allStudents || []).find((st) => st.id === sid);
+        setStudent(s || null);
+      } catch {
+        if (!cancelled) setStudent(null);
+      }
+    };
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [studentId]);
+
+  // ESC lukker modalen
+  useEffect(() => {
+    const onEsc = (e) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onEsc);
+    return () => window.removeEventListener("keydown", onEsc);
+  }, [onClose]);
+
+  const fmtPct = (val) =>
+    val == null || Number.isNaN(Number(val))
+      ? "–"
+      : `${Number(val).toFixed(1)}%`;
+
+  const attendanceYtd =
+    student?.attendance_ytd ?? student?.attendance_pct ?? null;
+  const absenceYtd =
+    attendanceYtd != null ? Math.max(0, 100 - attendanceYtd) : null;
+
+  const lastWeek = student?.attendance_last_week ?? null;
+  const last2Weeks = student?.attendance_last_2_weeks ?? null;
+  const last3Weeks = student?.attendance_last_3_weeks ?? null;
+  const last4Weeks = student?.attendance_last_4_weeks ?? null;
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>Student history</h3>
+
+        {student && (
+          <div className="card student-card">
+            <div className="student-card-header">
+              <div>
+                <div className="student-card-name">{student.name}</div>
+                <div className="student-card-sub">
+                  Year: {student.student_class ?? "–"}
+                  {student.gender && <> · Gender: {student.gender}</>}
+                </div>
+              </div>
+              <div className="student-chip">
+                {attendanceYtd != null ? fmtPct(attendanceYtd) : "No YtD data"}
+              </div>
+            </div>
+
+            <div className="student-meta-row">
+              <span className="student-meta-label">Address</span>
+              <span className="student-meta-value">
+                {student.address || "Not set"}
+              </span>
+            </div>
+
+            <div className="student-meta-row">
+              <span className="student-meta-label">Contact</span>
+              <span className="student-meta-value">
+                {student.contact_name || "–"}
+                {student.contact_relationship
+                  ? ` (${student.contact_relationship})`
+                  : ""}
+                {student.contact_phone ? ` · ${student.contact_phone}` : ""}
+              </span>
+            </div>
+
+            <div className="student-meta-row">
+              <span className="student-meta-label">Absent today</span>
+              <span className="student-meta-value">
+                <span
+                  className={
+                    student.absent_today ? "pill pill-danger" : "pill pill-ok"
+                  }
+                >
+                  {student.absent_today ? "Yes" : "No"}
+                </span>
+              </span>
+            </div>
+
+            <div className="student-grid">
+              <div className="student-stat">
+                <div className="student-stat-label">Attendance YtD</div>
+                <div className="student-stat-value">
+                  {fmtPct(attendanceYtd)}
+                </div>
+              </div>
+              <div className="student-stat">
+                <div className="student-stat-label">Absence YtD</div>
+                <div className="student-stat-value">
+                  {absenceYtd != null ? fmtPct(absenceYtd) : "–"}
+                </div>
+              </div>
+              <div className="student-stat">
+                <div className="student-stat-label">Last week</div>
+                <div className="student-stat-value">
+                  {fmtPct(lastWeek)}
+                </div>
+              </div>
+              <div className="student-stat">
+                <div className="student-stat-label">Last 2 weeks</div>
+                <div className="student-stat-value">
+                  {fmtPct(last2Weeks)}
+                </div>
+              </div>
+              <div className="student-stat">
+                <div className="student-stat-label">Last 3 weeks</div>
+                <div className="student-stat-value">
+                  {fmtPct(last3Weeks)}
+                </div>
+              </div>
+              <div className="student-stat">
+                <div className="student-stat-label">Last 4 weeks</div>
+                <div className="student-stat-value">
+                  {fmtPct(last4Weeks)}
+                </div>
+              </div>
+            </div>
+
+            <div className="student-events-summary">
+              Data is imported daily from the school system and reflects
+              attendance per student.
+            </div>
+          </div>
+        )}
+
+        <div className="btns" style={{ marginTop: 12 }}>
+          <button className="btn" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
   const [students, setStudents] = useState([]);
   const [studentId, setStudentId] = useState("");
@@ -350,8 +962,16 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
+  // 👇 NYTT: finn valgt student
+  const selectedStudent = useMemo(
+    () => students.find((s) => s.id === Number(studentId)),
+    [students, studentId]
+  );
+
   useEffect(() => {
-    API("/api/students").then(setStudents).catch(() => setStudents([]));
+    API("/api/students")
+      .then(setStudents)
+      .catch(() => setStudents([]));
   }, []);
 
   useEffect(() => {
@@ -364,6 +984,17 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
       document.body.style.overflow = prev;
     };
   }, [onClose]);
+
+  // 👇 NYTT: auto-fyll adresse + tittel når student endres
+  useEffect(() => {
+    if (!selectedStudent) return;
+
+    setAddress((prev) => (prev ? prev : selectedStudent.address || ""));
+    setTitle((prev) =>
+      prev ? prev : `Home visit for ${selectedStudent.name}`
+    );
+  }, [selectedStudent]);
+
 
   const createTask = async () => {
     if (!studentId) {
@@ -383,11 +1014,12 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
           student_id: Number(studentId),
           title: title.trim(),
           address: address.trim() || null,
-          body: reason ? reason.trim() : null, // shown under REASON
+          body: reason ? reason.trim() : null,
           due_at: defaultDueAt(),
           assignee_user_id: defaultAssigneeId,
           status: "Assigned",
           checklist: [],
+          external_ref: null,
         }),
       });
       await onCreated();
@@ -414,7 +1046,7 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
           <option value="">Select…</option>
           {students.map((s) => (
             <option key={s.id} value={s.id}>
-              {s.name}
+              {s.name} {s.student_class ? `(${s.student_class})` : ""}
             </option>
           ))}
         </select>
@@ -442,7 +1074,7 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
         />
 
         <div className="meta" style={{ marginTop: 8, opacity: 0.8 }}>
-          {new Date().toLocaleString("no-NO")}
+          {new Date().toLocaleDateString("no-NO")}
         </div>
 
         <div className="btns" style={{ marginTop: 12 }}>
@@ -462,13 +1094,12 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Edit Task (modal)                                                  */
-/* ------------------------------------------------------------------ */
 function EditModal({ task, onClose, onSaved, isAdmin }) {
   const [title, setTitle] = useState(task.title);
   const [address, setAddress] = useState(task.address || "");
-  const [dueAt, setDueAt] = useState(task.due_at || defaultDueAt());
+  const [dueAt, setDueAt] = useState(
+    onlyDateStr(task.due_at || defaultDueAt())
+  );
   const [reason, setReason] = useState(getReason(task));
   const [assignee, setAssignee] = useState(task.assignee_user_id || 2);
 
@@ -512,8 +1143,9 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
     title,
     address: address || null,
     due_at: toIso(dueAt) || null,
-    reason: reason || null, // server maps reason -> body
+    reason: reason || null,
     checklist,
+    external_ref: task.external_ref ?? null,
   };
   if (isAdmin) payloadBase.assignee_user_id = Number(assignee);
 
@@ -559,7 +1191,6 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
     if (!confirm("Delete this task?")) return;
     try {
       await API(`/api/tasks/${task.id}`, { method: "DELETE" });
-
       await onSaved();
       onClose();
     } catch (e) {
@@ -573,16 +1204,10 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
         <div className="row" style={{ alignItems: "center", marginBottom: 8 }}>
           <h3 style={{ margin: 0, flex: 1 }}>Edit task</h3>
           <button
-            className="btn"
+            className="btn ghost"
             onClick={onClose}
             aria-label="Close"
             title="Close"
-            style={{
-              padding: "6px 10px",
-              lineHeight: 1,
-              fontWeight: 700,
-              borderRadius: 8,
-            }}
           >
             ×
           </button>
@@ -604,8 +1229,9 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
           onChange={(e) => setAddress(e.target.value)}
         />
 
-        <label className="label">Due (yyyy-mm-dd hh:mm)</label>
+        <label className="label">Due date</label>
         <input
+          type="date"
           className="input"
           value={dueAt || ""}
           onChange={(e) => setDueAt(e.target.value)}
@@ -647,7 +1273,10 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
                     }}
                   />
                 </label>
-                <button className="btn btn-danger" onClick={() => removeItem(i)}>
+                <button
+                  className="btn btn-danger"
+                  onClick={() => removeItem(i)}
+                >
                   Remove
                 </button>
               </li>
@@ -685,7 +1314,10 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
           </div>
         )}
 
-        <div className="btns" style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}>
+        <div
+          className="btns"
+          style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}
+        >
           <button className="btn" onClick={onClose} disabled={saving}>
             Cancel
           </button>
@@ -702,7 +1334,11 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
             </button>
           )}
           {isAdmin && (
-            <button className="btn btn-danger" onClick={deleteTask} disabled={saving}>
+            <button
+              className="btn btn-danger"
+              onClick={deleteTask}
+              disabled={saving}
+            >
               Delete
             </button>
           )}
@@ -713,10 +1349,11 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
     </div>
   );
 }
+/* =========================== END BLOCK =========================== */
 
-/* ------------------------------------------------------------------ */
-/* Data hook                                                          */
-/* ------------------------------------------------------------------ */
+/* ================================================================
+   BLOCK: DATA_HOOK
+   ================================================================= */
 function useTasks() {
   const [tasks, setTasks] = useState([]);
   const reload = async () => {
@@ -731,10 +1368,35 @@ function useTasks() {
   }, []);
   return { tasks, reload };
 }
+/* =========================== END BLOCK =========================== */
 
-/* ------------------------------------------------------------------ */
-/* Task Card + Column                                                 */
-/* ------------------------------------------------------------------ */
+/* ================================================================
+   BLOCK: SEARCH_BAR
+   ================================================================= */
+function SearchBar({ value, onChange, placeholder = "Search tasks..." }) {
+  const [t, setT] = useState(value || "");
+  useEffect(() => {
+    const id = setTimeout(() => onChange?.(t.trim()), 150);
+    return () => clearTimeout(id);
+  }, [t, onChange]);
+  return (
+    <div className="stp-searchbar">
+      <input
+        className="stp-searchbar__input"
+        type="search"
+        value={t}
+        onChange={(e) => setT(e.target.value)}
+        placeholder={placeholder}
+        aria-label="Search tasks"
+      />
+    </div>
+  );
+}
+/* =========================== END BLOCK =========================== */
+
+/* ================================================================
+   BLOCK: TASK_CARD + COLUMN
+   ================================================================= */
 function TaskCard({ t, reload, compact, meId, isAdmin }) {
   const act = async (action, reason) => {
     try {
@@ -743,30 +1405,87 @@ function TaskCard({ t, reload, compact, meId, isAdmin }) {
         body: JSON.stringify({ action, reason }),
       });
       if (action === "reject") t.body = (reason || "").toString();
+      if (action === "complete") {
+        document.dispatchEvent(
+          new CustomEvent("task-synced", {
+            detail: { id: t.id, status: "Done" },
+          })
+        );
+      }
       await reload();
     } catch (e) {
       alert(e?.message || "Failed to update task");
     }
   };
+
   const canEdit = isAdmin || t.assignee_user_id === meId;
   const reasonText = titleCase(getReason(t));
+
+  // Touch swipe
+  const startX = useRef(null);
+  const [dragX, setDragX] = useState(0);
+  const onTs = (e) => {
+    startX.current = e.touches[0].clientX;
+  };
+  const onTm = (e) => {
+    if (startX.current == null) return;
+    setDragX(e.touches[0].clientX - startX.current);
+  };
+  const onTe = async () => {
+    const th = 80;
+    if (dragX > th) {
+      await act("complete");
+    } else if (dragX < -th) {
+      if (isAdmin) {
+        if (confirm("Delete this task?")) {
+          try {
+            await API(`/api/tasks/${t.id}`, { method: "DELETE" });
+            await reload();
+          } catch (e) {
+            alert(e?.message || "Delete failed");
+          }
+        }
+      } else {
+        const r = prompt("Reject reason?");
+        if (r) await act("reject", r);
+      }
+    }
+    setDragX(0);
+    startX.current = null;
+  };
+
   return (
     <div
       className={`task ${compact ? "compact" : ""} ${
         t.status === "Rejected" ? "rejected" : ""
       }`}
+      style={{ transform: `translateX(${dragX}px)` }}
+      onTouchStart={onTs}
+      onTouchMove={onTm}
+      onTouchEnd={onTe}
     >
       <div className="row" style={{ justifyContent: "space-between" }}>
         <div className="title">{t.title}</div>
-        <small className={`badge ${t.status === "Rejected" ? "rejected" : ""}`}>
-          {t.status}
-        </small>
+        <div className="row" style={{ gap: 6 }}>
+          {!!t.external_ref && <small className="badge">API</small>}
+          <small
+            className={`badge ${
+              t.status === "Rejected" ? "rejected" : ""
+            }`}
+          >
+            {t.status}
+          </small>
+        </div>
       </div>
 
       {!!reasonText && (
         <div className="mt-1">
           <div className="reason-label">REASON</div>
-          <div className={`reason-text ${t.status === "Rejected" ? "red" : ""}`}>
+          <div
+            className={`reason-text ${
+              t.status === "Rejected" ? "red" : ""
+            }`}
+          >
             {reasonText}
           </div>
         </div>
@@ -791,12 +1510,19 @@ function TaskCard({ t, reload, compact, meId, isAdmin }) {
           Open in Maps
         </button>
 
-        {/* Admin never sees accept/reject */}
-        {!isAdmin && (
-          <button className="btn" onClick={() => act("accept")}>
-            Accept
-          </button>
-        )}
+        <button
+          className="btn"
+          onClick={() =>
+            document.dispatchEvent(
+              new CustomEvent("open-history", {
+                detail: { studentId: t.student_id },
+              })
+            )
+          }
+        >
+          History
+        </button>
+
         {!isAdmin && (
           <button
             className="btn"
@@ -810,9 +1536,38 @@ function TaskCard({ t, reload, compact, meId, isAdmin }) {
           </button>
         )}
 
+              {isAdmin && (
+          <button
+            className="btn"
+            onClick={async () => {
+              try {
+                // move task to next day, keep roughly same time (or 09:00 if none)
+                const baseDate = t.due_at ? new Date(t.due_at) : new Date();
+                baseDate.setDate(baseDate.getDate() + 1);
+                baseDate.setHours(9, 0, 0, 0);
+
+                await API(`/api/tasks/${t.id}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({
+                    due_at: baseDate.toISOString(),
+                    external_ref: t.external_ref ?? null,
+                  }),
+                });
+                await reload();
+              } catch (e) {
+                alert(e?.message || "Failed to move task to next day");
+              }
+            }}
+          >
+            Move to next day
+          </button>
+        )}
+
+
         <button className="btn btn-primary" onClick={() => act("complete")}>
-          Complete
+          DONE
         </button>
+
         {canEdit && (
           <button
             className="btn"
@@ -834,8 +1589,7 @@ function Column({ title, filter, tasks, reload, compact, meId, isAdmin }) {
   const list = tasks.filter(filter);
   return (
     <div className="col">
-      <h3>{title}</h3>
-      <div className="drop-hint">Drop here</div>
+      <h3 className="col-title">{title}</h3>
       {list.map((t) => (
         <TaskCard
           key={t.id}
@@ -849,38 +1603,60 @@ function Column({ title, filter, tasks, reload, compact, meId, isAdmin }) {
     </div>
   );
 }
+/* =========================== END BLOCK =========================== */
 
-/* ------------------------------------------------------------------ */
-/* Admin/User board                                                   */
-/* ------------------------------------------------------------------ */
-function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
+/* ================================================================
+   BLOCK: ADMIN_BOARD / USER_BOARD
+   ================================================================= */
+function AdminBoard({ compact, tasks, reload, isAdmin, meId, query }) {
+  const text = (query || "").toLowerCase();
+
+  const tasksTextFiltered = useMemo(() => {
+    if (!text) return tasks;
+    return tasks.filter((t) => {
+      const hay = `${t.title || ""} ${t.body || ""} ${
+        t.address || ""
+      }`.toLowerCase();
+      return hay.includes(text);
+    });
+  }, [tasks, text]);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  // ========================= USER VIEW =========================
   if (!isAdmin) {
     const [scope, setScope] = useState("today");
-    const todayStr = new Date().toISOString().slice(0, 10);
     const forMe = useMemo(
-      () => tasks.filter((t) => t.assignee_user_id === meId),
-      [tasks, meId]
+      () => tasksTextFiltered.filter((t) => t.assignee_user_id === meId),
+      [tasksTextFiltered, meId]
     );
+
     const filtered = useMemo(() => {
       switch (scope) {
         case "today":
           return forMe.filter(
-            (t) => onlyDateStr(t.due_at) === todayStr && t.status !== "Done"
+            (t) =>
+              onlyDateStr(t.due_at) === todayStr &&
+              t.status !== "Done" &&
+              t.status !== "Rejected"
           );
-        case "upcoming":
-          return forMe.filter(
-            (t) => onlyDateStr(t.due_at) > todayStr && t.status !== "Done"
-          );
+        case "rejected":
+          return forMe.filter((t) => t.status === "Rejected");
         case "done":
           return forMe.filter((t) => t.status === "Done");
         default:
-          return forMe.filter((t) => t.status !== "Done");
+          return forMe;
       }
     }, [forMe, scope, todayStr]);
+
     const sorted = useMemo(
-      () => filtered.slice().sort((a, b) => ((a.due_at || "") > (b.due_at || "") ? 1 : -1)),
+      () =>
+        filtered
+          .slice()
+          .sort((a, b) => ((a.due_at || "") > (b.due_at || "") ? 1 : -1)),
       [filtered]
     );
+
     return (
       <>
         <div className="chipbar">
@@ -891,10 +1667,10 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
             Today
           </button>
           <button
-            className={`chip ${scope === "upcoming" ? "active" : ""}`}
-            onClick={() => setScope("upcoming")}
+            className={`chip ${scope === "rejected" ? "active" : ""}`}
+            onClick={() => setScope("rejected")}
           >
-            Upcoming
+            Rejected
           </button>
           <button
             className={`chip ${scope === "done" ? "active" : ""}`}
@@ -902,23 +1678,15 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
           >
             Done
           </button>
-          <button
-            className={`chip ${scope === "all" ? "active" : ""}`}
-            onClick={() => setScope("all")}
-          >
-            All
-          </button>
         </div>
         <div className="board">
           <Column
             title={
               scope === "today"
                 ? "Today"
-                : scope === "upcoming"
-                ? "Upcoming"
-                : scope === "done"
-                ? "Done"
-                : "My tasks"
+                : scope === "rejected"
+                ? "Rejected"
+                : "Done"
             }
             filter={() => true}
             tasks={sorted}
@@ -932,17 +1700,48 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
     );
   }
 
-  // Admin view
+  // ========================= ADMIN VIEW =========================
   const [view, setView] = useState("overview"); // overview | perUser
-  const [statusFilter, setStatusFilter] = useState("all"); // all | active | new | rejected | done
   const [userFilter, setUserFilter] = useState("");
+  const [selectedDate, setSelectedDate] = useState(todayStr);
+const [statusScope, setStatusScope] = useState("today"); // today | rejected | done
 
-  const statusMatch = (t) => {
-    switch (statusFilter) {
-      case "active":
+  const tasksByDate = useMemo(() => {
+    if (!selectedDate) return tasksTextFiltered;
+    const key = selectedDate;
+    return tasksTextFiltered.filter((t) => {
+      if (!t.due_at) return false;
+      return onlyDateStr(t.due_at) === key;
+    });
+  }, [tasksTextFiltered, selectedDate]);
+
+  const usersFromTasks = useMemo(() => {
+    const map = new Map();
+    for (const t of tasksByDate) {
+      if (t.assignee_user_id != null) {
+        map.set(t.assignee_user_id, `User ${t.assignee_user_id}`);
+      }
+    }
+    for (const u of USERS) {
+      if (map.has(u.id)) map.set(u.id, u.name);
+    }
+    return Array.from(map.entries()).sort((a, b) =>
+      String(a[1]).localeCompare(String(b[1]))
+    );
+  }, [tasksByDate]);
+
+  const sorted = useMemo(
+    () =>
+      tasksByDate
+        .slice()
+        .sort((a, b) => ((a.due_at || "") > (b.due_at || "") ? 1 : -1)),
+    [tasksByDate]
+  );
+
+  const statusMatchesScope = (t) => {
+    switch (statusScope) {
+      case "today":
         return t.status !== "Done" && t.status !== "Rejected";
-      case "new":
-        return t.status === "New";
       case "rejected":
         return t.status === "Rejected";
       case "done":
@@ -952,33 +1751,111 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
     }
   };
 
-  const usersFromTasks = useMemo(() => {
-    const map = new Map();
-    for (const t of tasks)
-      if (t.assignee_user_id != null) map.set(t.assignee_user_id, `User ${t.assignee_user_id}`);
-    for (const u of USERS) if (map.has(u.id)) map.set(u.id, u.name);
-    return Array.from(map.entries()).sort((a, b) =>
-      String(a[1]).localeCompare(String(b[1]))
-    );
-  }, [tasks]);
 
-  const sorted = useMemo(
-    () => tasks.slice().sort((a, b) => ((a.due_at || "") > (b.due_at || "") ? 1 : -1)),
-    [tasks]
+  const candidateTasks = useMemo(
+    () =>
+      sorted.filter(
+        (t) =>
+          onlyDateStr(t.due_at) === todayStr &&
+          t.status !== "Done" &&
+          t.status !== "Rejected"
+      ),
+    [sorted, todayStr]
   );
-  const filtered = useMemo(() => sorted.filter(statusMatch), [sorted, statusFilter]);
 
-  const col = (title, filter) => (
+  const tasksForSelectedUserToday = useMemo(() => {
+    if (view !== "perUser" || !userFilter) return [];
+    return tasksTextFiltered.filter(
+      (t) =>
+        String(t.assignee_user_id) === String(userFilter) &&
+        onlyDateStr(t.due_at) === todayStr &&
+        t.status !== "Done" &&
+        t.status !== "Rejected"
+    );
+  }, [view, userFilter, tasksTextFiltered, todayStr]);
+
+  const selectedUserName =
+    usersFromTasks.find(([id]) => String(id) === String(userFilter))?.[1] ||
+    (userFilter ? `User ${userFilter}` : "");
+
+    const col = (title, filter) => (
     <Column
       title={title}
-      filter={filter}
-      tasks={filtered}
+      filter={(t) => statusMatchesScope(t) && filter(t)}
+      tasks={sorted}
       reload={reload}
       compact={compact}
       meId={meId}
       isAdmin={true}
     />
   );
+
+
+  const handleExportCsv = () => {
+    let rows = tasksByDate;
+    if (view === "perUser" && userFilter) {
+      rows = rows.filter(
+        (t) => String(t.assignee_user_id) === String(userFilter)
+      );
+    }
+    if (!rows || rows.length === 0) {
+      alert("No tasks to export for current filters");
+      return;
+    }
+
+    const header = [
+      "ID",
+      "Title",
+      "Status",
+      "AssigneeId",
+      "DueDate",
+      "StudentId",
+      "Address",
+      "AttendancePct",
+      "LastAbsenceDate",
+      "LastAbsenceReason",
+    ];
+
+    const escapeCell = (val) => {
+      if (val === null || val === undefined) return "";
+      const s = String(val);
+      if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    };
+
+    const lines = [header.join(",")];
+    for (const t of rows) {
+      lines.push(
+        [
+          t.id,
+          t.title || "",
+          t.status || "",
+          t.assignee_user_id ?? "",
+          t.due_at || "",
+          t.student_id ?? "",
+          t.address || "",
+          typeof t.attendance_pct === "number" ? t.attendance_pct : "",
+          t.last_absence_date || "",
+          t.last_absence_reason || "",
+        ]
+          .map(escapeCell)
+          .join(",")
+      );
+    }
+
+    const csv = lines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "tasks_export.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <>
@@ -996,19 +1873,22 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
         </label>
 
         <label className="inline no-shrink">
-          Status
-          <select
+          Date
+          <input
+            type="date"
             className="select-sm"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-          >
-            <option value="all">All</option>
-            <option value="active">Active</option>
-            <option value="new">New</option>
-            <option value="rejected">Rejected</option>
-            <option value="done">Done</option>
-          </select>
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+          />
         </label>
+
+        <button
+          type="button"
+          className="chip chip-today"
+          onClick={() => setSelectedDate(todayStr)}
+        >
+          Today
+        </button>
 
         {view === "perUser" && (
           <label className="inline no-shrink">
@@ -1027,51 +1907,93 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
             </select>
           </label>
         )}
+
+              <div className="spacer" />
+
+        <div className="chipbar chipbar-inline">
+          <button
+            type="button"
+            className={`chip ${statusScope === "today" ? "active" : ""}`}
+            onClick={() => setStatusScope("today")}
+          >
+            Today
+          </button>
+          <button
+            type="button"
+            className={`chip ${statusScope === "rejected" ? "active" : ""}`}
+            onClick={() => setStatusScope("rejected")}
+          >
+            Rejected
+          </button>
+          <button
+            type="button"
+            className={`chip ${statusScope === "done" ? "active" : ""}`}
+            onClick={() => setStatusScope("done")}
+          >
+            Done
+          </button>
+        </div>
+
+        <button type="button" className="btn" onClick={handleExportCsv}>
+          Export CSV
+        </button>
       </div>
 
+
+      {selectedDate === todayStr && (
+        <div className="info-row">
+          {candidateTasks.length ? (
+            <>
+              <strong>{candidateTasks.length}</strong> tasks not done today –
+              candidates for tomorrow.
+            </>
+          ) : (
+            <>No open tasks for today. 🎉</>
+          )}
+        </div>
+      )}
+
+      {/* ✅ Admin route map when viewing a single user's tasks */}
+      {view === "perUser" && userFilter && (
+        <RouteMapPanel
+          tasks={tasksForSelectedUserToday}
+          title={`Today's route for ${selectedUserName}`}
+          subtitle="Based on today's active visits"
+        />
+      )}
+
       {view === "overview" ? (
-        statusFilter === "all" ? (
-          <div className="board">
-            {col("New", (t) => t.status === "New")}
-            {col("Rejected", (t) => t.status === "Rejected")}
-            {col("Done", (t) => t.status === "Done")}
-          </div>
-        ) : (
-          <div className="board">
-            {col(
-              statusFilter === "active"
-                ? "Active"
-                : statusFilter.charAt(0).toUpperCase() + statusFilter.slice(1),
-              () => true
-            )}
-          </div>
-        )
+        <div className="board">
+          {col(
+            "Today",
+            (t) => t.status !== "Done" && t.status !== "Rejected"
+          )}
+          {col("Rejected", (t) => t.status === "Rejected")}
+          {col("Done", (t) => t.status === "Done")}
+        </div>
       ) : (
         <div className="board">
           {userFilter ? (
             <>
               {col(
-                "Active",
+                "Today",
                 (t) =>
                   String(t.assignee_user_id) === String(userFilter) &&
-                  (statusFilter === "all"
-                    ? t.status !== "Done" && t.status !== "Rejected"
-                    : statusMatch(t))
+                  t.status !== "Done" &&
+                  t.status !== "Rejected"
               )}
-              {(statusFilter === "all" || statusFilter === "done") &&
-                col(
-                  "Done",
-                  (t) =>
-                    String(t.assignee_user_id) === String(userFilter) &&
-                    t.status === "Done"
-                )}
-              {statusFilter === "rejected" &&
-                col(
-                  "Rejected",
-                  (t) =>
-                    String(t.assignee_user_id) === String(userFilter) &&
-                    t.status === "Rejected"
-                )}
+              {col(
+                "Rejected",
+                (t) =>
+                  String(t.assignee_user_id) === String(userFilter) &&
+                  t.status === "Rejected"
+              )}
+              {col(
+                "Done",
+                (t) =>
+                  String(t.assignee_user_id) === String(userFilter) &&
+                  t.status === "Done"
+              )}
             </>
           ) : (
             <div className="card empty" style={{ margin: "8px 10px" }}>
@@ -1083,63 +2005,121 @@ function AdminBoard({ compact, tasks, reload, isAdmin, meId }) {
     </>
   );
 }
+/* =========================== END BLOCK =========================== */
 
-/* ------------------------------------------------------------------ */
-/* Route tab                                                          */
-/* ------------------------------------------------------------------ */
-function RouteTab({ tasksForMeToday }) {
-  const sorted = tasksForMeToday
-    .slice()
-    .sort((a, b) => new Date(a.due_at) - new Date(b.due_at));
-  const openSmartRoute = () => {
-    const addrs = sorted.map((t) => t.address).filter(Boolean);
-    const url = buildSmartRouteUrl(addrs);
-    if (url) window.open(url, "_blank");
-  };
+/* ================================================================
+   BLOCK: ROUTE_MAP + ROUTE_TAB
+   ================================================================= */
+function RouteMapPanel({ tasks, title, subtitle }) {
+  const sorted = useMemo(
+    () =>
+      (tasks || [])
+        .slice()
+        .sort((a, b) => new Date(a.due_at) - new Date(b.due_at)),
+    [tasks]
+  );
+
+  const addresses = sorted.map((t) => t.address).filter(Boolean);
+
+  // 🔗 External route + 🗺️ Embed route
+  const mapUrl = buildSmartRouteUrl(addresses);
+  const embedUrl = buildSmartRouteEmbedUrl(addresses);
+
+  const stops = sorted.length;
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+
   return (
-    <div style={{ padding: "8px 12px" }}>
-      <div
-        className="row"
-        style={{ justifyContent: "space-between", marginBottom: 8 }}
-      >
-        <div style={{ opacity: 0.85 }}>{sorted.length} visits today</div>
-        <button className="btn btn-primary" onClick={openSmartRoute}>
-          Open Smart Route
-        </button>
-      </div>
-      {sorted.map((t) => (
-        <div key={t.id} className="task">
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <div className="title">{t.title}</div>
-            <small className="badge">{t.status}</small>
-          </div>
-            <div className="meta">
-              {fmtNO(t.due_at)} • Address: {t.address || "-"}
+    <section className="route-layout">
+      <div className="route-map card route-map-card">
+        <div className="route-map-header">
+          <div>
+            <div className="route-map-title">{title}</div>
+            {subtitle && <div className="route-map-sub">{subtitle}</div>}
+            <div className="route-map-meta">
+              {stops ? (
+                <>
+                  {stops} stops
+                  {first?.due_at && last?.due_at && (
+                    <>
+                      {" "}
+                      · {fmtNO(first.due_at)} – {fmtNO(last.due_at)}
+                    </>
+                  )}
+                </>
+              ) : (
+                <>No active visits with address.</>
+              )}
             </div>
-          <div className="btns">
-            <button
-              className="btn"
-              onClick={() =>
-                window.open(
-                  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-                    t.address || "London"
-                  )}`,
-                  "_blank"
-                )
-              }
-            >
-              Open in Maps
-            </button>
           </div>
+          {mapUrl && (
+            <button
+              className="btn btn-primary"
+              onClick={() => window.open(mapUrl, "_blank")}
+            >
+              Open full map
+            </button>
+          )}
         </div>
-      ))}
-    </div>
+
+        {embedUrl ? (
+          <div className="route-map-frame-wrap">
+            <iframe
+              src={embedUrl}
+              title="Route map"
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+              className="route-map-frame"
+            />
+          </div>
+        ) : (
+          <div className="route-map-empty">
+            Google map will come in future
+          </div>
+        )}
+      </div>
+
+      <div className="route-list card">
+        <div className="route-list-title">Stops</div>
+        {!sorted.length && (
+          <div className="route-map-empty">No visits for this route.</div>
+        )}
+        {sorted.map((t, idx) => (
+          <div key={t.id} className="route-list-task">
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <div>
+                <div className="route-list-task-title">
+                  {idx + 1}. {t.title}
+                </div>
+                <div className="route-list-task-meta">
+                  {fmtNO(t.due_at)} • {t.address || "-"}
+                </div>
+              </div>
+              <span className="badge">{t.status}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Bottom nav                                                         */
-/* ------------------------------------------------------------------ */
+function RouteTab({ tasksForMeToday }) {
+  return (
+    <div className="route-tab">
+      <RouteMapPanel
+        tasks={tasksForMeToday}
+        title="Today's route"
+        subtitle="Your planned visits"
+      />
+    </div>
+  );
+}
+/* =========================== END BLOCK =========================== */
+
+/* ================================================================
+   BLOCK: BOTTOM_NAV
+   ================================================================= */
 function BottomNav({ onBack, onHome, onOverview }) {
   return (
     <nav className="bottom-nav" role="navigation" aria-label="Primary">
@@ -1158,15 +2138,19 @@ function BottomNav({ onBack, onHome, onOverview }) {
     </nav>
   );
 }
+/* =========================== END BLOCK =========================== */
 
-/* ------------------------------------------------------------------ */
-/* App                                                                */
-/* ------------------------------------------------------------------ */
+/* ================================================================
+   BLOCK: APP SHELL
+   ================================================================= */
 function App() {
   const [compact] = useState(true);
   const [activeTab, setActiveTab] = useState("board");
-  const [authed, setAuthed] = useState(!!localStorage.getItem("user"));
+  const [authed, setAuthed] = useState(
+    !!localStorage.getItem("auth_token") && !!localStorage.getItem("x_user")
+  );
   const [showCreate, setShowCreate] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const { tasks, reload } = useTasks();
 
   const path = window.location.pathname;
@@ -1175,17 +2159,24 @@ function App() {
     if (authed && path === "/login") window.location.replace("/");
   }, [authed, path]);
 
-  const onDemoLogin = (u) => {
-    localStorage.setItem("user", u);
-    setAuthed(true);
-    window.location.replace("/");
-  };
-  const onGoogleLogin = () => alert("Google Sign-In placeholder.");
-  if (!authed) return <Login onDemoLogin={onDemoLogin} onGoogleLogin={onGoogleLogin} />;
+  if (!authed) return <Login />;
 
-  const role = localStorage.getItem("user") || "paddy";
-  const meId = role === "ulf" ? 2 : role === "una" ? 3 : 1;
-  const isAdmin = role === "paddy";
+  let currentUser = null;
+  try {
+    currentUser = JSON.parse(localStorage.getItem("current_user") || "null");
+  } catch {
+    currentUser = null;
+  }
+
+  const meId = currentUser?.id ?? 0;
+  const isAdmin =
+    currentUser?.role === "ADMIN" ||
+    currentUser?.role === "Admin" ||
+    currentUser?.role === "admin";
+
+  useEffect(() => {
+    document.body.classList.toggle("is-admin", isAdmin);
+  }, [isAdmin]);
 
   const todayISO = new Date().toISOString().slice(0, 10);
   const myAssigned = (tasks || []).filter(
@@ -1209,6 +2200,13 @@ function App() {
     return () => window.removeEventListener("edit-task", handler);
   }, []);
 
+  const [historyStudentId, setHistoryStudentId] = useState(null);
+  useEffect(() => {
+    const h = (e) => setHistoryStudentId(e.detail.studentId);
+    document.addEventListener("open-history", h);
+    return () => document.removeEventListener("open-history", h);
+  }, []);
+
   const goBack = () => {
     if (window.history.length > 1) window.history.back();
     else window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1218,9 +2216,10 @@ function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
   const goOverview = () => {
-    setActiveTab("board");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    document.dispatchEvent(new CustomEvent("open-drawer"));
   };
+
+  const [q, setQ] = useState("");
 
   return (
     <>
@@ -1228,9 +2227,14 @@ function App() {
         onOpenSmartRoute={openSmartRoute}
         todaysCount={tasksForMeToday.length}
         onCreate={() => setShowCreate(true)}
+        isAdmin={isAdmin}
+        onOpenSettings={() => setShowSettings(true)}
       />
 
-      {/* Tabs: stable grid with right-anchored "+ New Task" */}
+      <div className="search-strip">
+        <SearchBar value={q} onChange={setQ} />
+      </div>
+
       <div className="tabs">
         <div className="tabs-left">
           <button
@@ -1250,16 +2254,26 @@ function App() {
         </div>
 
         <div className="tabs-right">
-          {isAdmin && (
-            <button
-              className="tab link no-shrink"
-              onClick={() => setShowCreate(true)}
-              aria-label="Create new task"
-            >
-              + New Task
-            </button>
-          )}
-        </div>
+  <button
+    className="tab link no-shrink"
+    onClick={reload}
+    aria-label="Refresh tasks"
+    title="Refresh tasks"
+  >
+    ↻ Refresh
+  </button>
+
+  {isAdmin && (
+    <button
+      className="tab link no-shrink"
+      onClick={() => setShowCreate(true)}
+      aria-label="Create new task"
+    >
+      + New task
+    </button>
+  )}
+</div>
+
       </div>
 
       {activeTab === "board" ? (
@@ -1269,6 +2283,7 @@ function App() {
           reload={reload}
           isAdmin={isAdmin}
           meId={meId}
+          query={q}
         />
       ) : (
         <RouteTab tasksForMeToday={tasksForMeToday} />
@@ -1282,6 +2297,10 @@ function App() {
         />
       )}
 
+      {isAdmin && showSettings && (
+        <SettingsModal onClose={() => setShowSettings(false)} />
+      )}
+
       {editTask && (
         <EditModal
           task={editTask}
@@ -1291,9 +2310,17 @@ function App() {
         />
       )}
 
+      {historyStudentId && (
+        <HistoryModal
+          studentId={historyStudentId}
+          onClose={() => setHistoryStudentId(null)}
+        />
+      )}
+
       <BottomNav onBack={goBack} onHome={goHome} onOverview={goOverview} />
     </>
   );
 }
+/* =========================== END BLOCK =========================== */
 
 createRoot(document.getElementById("root")).render(<App />);

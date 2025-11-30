@@ -4,13 +4,6 @@ services:
     env: python
     rootDir: backend
     plan: free
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 1
-    envVars:
-      - key: DATABASE_URL
-        value: sqlite:////data/app.db
     buildCommand: |
       pip install -r requirements.txt
       cd ../frontend
@@ -20,8 +13,24 @@ services:
       mkdir -p app/static
       rm -rf app/static/*
       cp -r ../frontend/dist/* app/static/
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
+
+    # Kjøres før hver deploy – nå bruker vi NY seed-cli
     preDeployCommand: |
-      mkdir -p /data/tasks_feed
-      test -f /data/tasks_feed/tasks.csv || echo "student_id,title,address,due_at,assignee_user_id,status,reason" > /data/tasks_feed/tasks.csv
-      python -m app.seed --ensure
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+      python -m app.seed --reset
+
+    envVars:
+      # SQLite-fil på Render
+      - key: DATABASE_URL
+        value: sqlite:////data/app.db
+
+      # Disse to lar du gjerne stå tomme i YAML og setter i Render-dashboardet
+      - key: API_TOKEN
+        sync: false
+      - key: MAKE_WEBHOOK_URL
+        sync: false
+
+      # Praktisk å ha backend-url tilgjengelig i utils (bruk ditt faktiske domene)
+      - key: BACKEND_URL
+        value: https://demo-taskpro.onrender.com
+

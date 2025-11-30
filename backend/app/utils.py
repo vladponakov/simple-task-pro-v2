@@ -1,57 +1,107 @@
 # app/utils.py
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import secrets
+import urllib.request
 from datetime import datetime, date, timedelta
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import Task, TaskEvent, TaskEventType, User
+from .models import Task, TaskEvent, TaskEventType, User, Student, TaskStatus
 
 
-# --- JSON sanitizer for event metadata --------------------------------------
+# ---------------- Password helpers ----------------
+
+
+def hash_password(password: str) -> str:
+    """Create a salted SHA256 hash.
+
+    Ikke like sterkt som bcrypt/argon2, men holder fint for demo
+    og krever ingen ekstra pakker.
+    """
+    password = password or ""
+    salt = secrets.token_hex(16)
+    digest = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+    return f"{salt}${digest}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    if not stored:
+        return False
+    try:
+        salt, digest = stored.split("$", 1)
+    except ValueError:
+        return False
+    check = hashlib.sha256((salt + (password or "")).encode("utf-8")).hexdigest()
+    return secrets.compare_digest(check, digest)
+
+
+# ---------------- JSON sanitizer ----------------
+
+
 def _jsonify(obj: Any) -> Any:
+    """Gjør metadata JSON-vennlig (brukes i TaskEvent.meta)."""
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
     if isinstance(obj, Enum):
         return obj.value
-    if isinstance(obj, list):
-        return [_jsonify(x) for x in obj]
     if isinstance(obj, dict):
-        return {k: _jsonify(v) for k, v in obj.items()}
-    return obj
+        return {str(k): _jsonify(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_jsonify(v) for v in obj]
+    # fallback
+    return str(obj)
 
 
-# --- Event logging -----------------------------------------------------------
+# ---------------- Event logging ----------------
+
+
 def log_event(
     db: Session,
     task: Task,
     actor: User,
     event_type: TaskEventType,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> None:
-    """Insert a row into task_events with JSON-serializable metadata."""
-    evt = TaskEvent(
+    meta: Optional[Dict[str, Any]] = None,
+) -> TaskEvent:
+    ev = TaskEvent(
         task_id=task.id,
         type=event_type,
-        metadata=_jsonify(metadata or {}),  # <-- ensure JSON-safe
+        meta=_jsonify(meta or {}),
         actor_user_id=actor.id,
     )
-    db.add(evt)
+    db.add(ev)
     db.commit()
+    db.refresh(ev)
+    return ev
 
 
-# --- Soft delete / restore ---------------------------------------------------
+# ---------------- Soft delete / restore ----------------
+
+
 def soft_delete(db: Session, task: Task, actor: User) -> None:
     if task.deleted_at is not None:
         return
     task.deleted_at = datetime.utcnow()
     db.add(task)
     db.commit()
-    log_event(db, task, actor, TaskEventType.DELETE, {"deleted_at": task.deleted_at})
+    log_event(
+        db,
+        task,
+        actor,
+        TaskEventType.DELETE,
+        {"deleted_at": task.deleted_at.isoformat()},
+    )
 
 
 def restore(db: Session, task: Task, actor: User) -> None:
@@ -63,4 +113,169 @@ def restore(db: Session, task: Task, actor: User) -> None:
     task.deleted_at = None
     db.add(task)
     db.commit()
-    log_event(db, task, actor, TaskEventType.RESTORE, {"restored_at": datetime.utcnow()})
+    log_event(
+        db,
+        task,
+        actor,
+        TaskEventType.RESTORE,
+        {"restored_at": datetime.utcnow().isoformat()},
+    )
+
+
+# ---------------- Notify Make.com when task is DONE ----------------
+
+
+def notify_make_task_status(task: Task) -> None:
+    """
+    Kalles når en oppgave går til DONE.
+    Sender et POST-kall til Make.com webhook.
+
+    Krever bare at MAKE_WEBHOOK_URL er satt.
+    MAKE_WEBHOOK_API_KEY er valgfri (brukes bare hvis konfigurert).
+    """
+    url = getattr(settings, "MAKE_WEBHOOK_URL", None)
+    api_key = getattr(settings, "MAKE_WEBHOOK_API_KEY", None)
+
+    if not url:
+        logging.debug("Make.com webhook URL ikke satt – hopper over notify.")
+        return
+
+    try:
+        updated_at = task.updated_at or datetime.utcnow()
+
+        payload: Dict[str, Any] = {
+            "event": "task_done",
+            "source": "taskpro-app",
+            "version": "1.0",
+            "task": {
+                "id": task.id,
+                "student_id": task.student_id,
+                "title": task.title,
+                "status": task.status.value
+                if hasattr(task.status, "value")
+                else str(task.status),
+                "due_at": task.due_at.isoformat() if task.due_at else None,
+                "created_at": task.created_at.isoformat() if task.created_at else None,
+                "completed_at": task.completed_at.isoformat()
+                if task.completed_at
+                else None,
+                "address": task.address,
+                "notes": task.body,
+                "assignee_user_id": task.assignee_user_id,
+                "external_ref": task.external_ref,
+                "checklist": task.checklist or [],
+            },
+        }
+
+        data_bytes = json.dumps(payload, default=str).encode("utf-8")
+
+        headers = {"Content-Type": "application/json"}
+        if api_key:  # bare hvis du faktisk bruker den i Make
+            headers["x-make-apikey"] = api_key
+
+        req = urllib.request.Request(
+            url,
+            data=data_bytes,
+            method="POST",
+            headers=headers,
+        )
+
+        with urllib.request.urlopen(req, timeout=5) as resp:  # noqa: S310
+            logging.info(
+                "Sent DONE-task %s to Make.com, status=%s",
+                task.id,
+                resp.status,
+            )
+
+    except Exception as exc:  # noqa: BLE001
+        # Viktig: ikke knekke API-et selv om Make.com er nede.
+        logging.exception("Failed to notify Make.com for task %s: %s", task.id, exc)
+
+
+# ---------------- Task creation helper (Home Visite) ----------------
+
+
+def create_home_visit_task_for_student(
+    db: Session,
+    *,
+    student: Student,
+    actor: User,
+    body: str | None = None,
+    assignee_user_id: int | None = None,
+    due_at: datetime | None = None,
+    external_ref: str | None = None,
+    checklist: List[dict] | None = None,
+    # snapshot-felter – ikke kolonner i Task, men vi kan henge dem på objektet
+    attendance_pct: int | None = None,
+    last_absence_date: date | None = None,
+    last_absence_reason: str | None = None,
+    visit_notes: str | None = None,
+) -> Task:
+    """
+    Felles logikk for å opprette en 'Home Visite'-task for en elev.
+
+    Brukes både fra /api/batch/import_students, /api/tasks og seed.py.
+
+    - Tittel: alltid "Fornavn Etternavn" hvis mulig, ellers student.name
+    - Body/reason: innkommende body hvis satt, ellers "Home Visite"
+    - Assignee: innkommende assignee_user_id, ellers actor (typisk admin)
+    - due_at: innkommende due_at, ellers datetime.utcnow()
+    - status: alltid NEW ved opprettelse
+    """
+
+    # 1) Tittel: "FirstName LastName" hvis vi har det, ellers student.name
+    if getattr(student, "first_name", None) and getattr(student, "last_name", None):
+        title = f"{student.first_name} {student.last_name}"
+    else:
+        title = student.name
+
+    # 2) Reason/body: bruk innkommende hvis satt, ellers "Home Visite"
+    text_body = (body or "").strip()
+    if not text_body:
+        text_body = "Home Visite"
+
+    # 3) Fallback assignee: hvis ingen gitt, bruk actor som assignee
+    effective_assignee_id = assignee_user_id or actor.id
+
+    # 4) due_at: hvis ikke satt, bruk nå
+    if due_at is None:
+    # bruk "trygg" tid midt på dagen, så vi unngår timezone-hop
+        now = datetime.utcnow()
+        effective_due_at = now.replace(hour=10, minute=0, second=0, microsecond=0)
+    else:
+        effective_due_at = due_at
+
+
+    # 5) Checklist default
+    effective_checklist = checklist or []
+
+    # Viktig: snapshot-feltene finnes ikke som kolonner på Task,
+    # så de SENDES IKKE inn som keyword-arguments her.
+    task = Task(
+        student_id=student.id,
+        title=title,
+        body=text_body,
+        address=student.address,
+        status=TaskStatus.NEW,  # ev. TaskStatus.ASSIGNED hvis du vil ha det som default
+        assignee_user_id=effective_assignee_id,
+        created_by=actor.id,
+        due_at=effective_due_at,
+        checklist=effective_checklist,
+        external_ref=external_ref,
+    )
+
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    # Snapshot-feltene kan henges på objektet i minnet hvis du vil bruke dem i responses
+    if attendance_pct is not None:
+        setattr(task, "attendance_pct", attendance_pct)
+    if last_absence_date is not None:
+        setattr(task, "last_absence_date", last_absence_date)
+    if last_absence_reason is not None:
+        setattr(task, "last_absence_reason", last_absence_reason)
+    if visit_notes is not None:
+        setattr(task, "visit_notes", visit_notes)
+
+    return task
