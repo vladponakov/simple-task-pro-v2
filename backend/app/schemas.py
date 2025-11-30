@@ -235,10 +235,11 @@ class DoneExportItem(BaseModel):
 
 class BatchSettingsOut(BaseModel):
     rollover_hour: int
-
+    rollover_timezone: str | None = None
     class Config:
         from_attributes = True
 
 
 class BatchSettingsUpdate(BaseModel):
     rollover_hour: int
+    rollover_timezone: str | None = None 

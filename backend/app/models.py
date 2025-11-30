@@ -81,6 +81,7 @@ class AppSettings(Base):
 
     id = Column(Integer, primary_key=True, default=1)
     rollover_hour = Column(Integer, nullable=False, default=18)
+    rollover_timezone = Column(String, nullable=True)
     # senere kan du også legge til:
     # student_sync_hour = Column(Integer, nullable=False, default=7)
     # import_daily_hour = Column(Integer, nullable=False, default=8)

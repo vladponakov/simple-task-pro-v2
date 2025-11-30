@@ -97,7 +97,20 @@ const toIso = (v) => {
   return isNaN(d) ? null : d.toISOString();
 };
 
-const defaultDueAt = () => new Date().toISOString();
+const defaultDueAt = () => {
+  const d = new Date();
+
+  // Sett f.eks. til "nå" lokalt – hvis du heller vil ha 10:00 hver dag, kan vi justere det
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+
+  // 🔹 Viktig: INGEN "Z" på slutten → tolkes som "lokal" / naiv, ikke UTC
+  return `${y}-${m}-${day}T${hh}:${mm}:${ss}`;
+};
 
 function buildSmartRouteUrl(addresses) {
   if (!addresses || addresses.length === 0) return null;
@@ -446,36 +459,46 @@ const [batchSettings, setBatchSettings] = useState(() => {
   try {
     const raw = localStorage.getItem("batchSettings");
     if (!raw) {
-      return { rolloverAt: "17:00" };
+      return { rolloverAt: "17:00", timezone: "Europe/London" };
     }
     const parsed = JSON.parse(raw);
     return {
       rolloverAt: parsed.rolloverAt || "17:00",
+      timezone: parsed.timezone || "Europe/London",
     };
   } catch {
-    return { rolloverAt: "17:00" };
+    return { rolloverAt: "17:00", timezone: "Europe/London" };
   }
 });
 
+const TIMEZONES = [
+  { value: "Europe/London", label: "London (UK / UTC)" },
+  { value: "Europe/Oslo", label: "Oslo (Norway)" },
+];
 
 
-  const load = async () => {
-  try {
-    const [st, us, batch] = await Promise.all([
-      API("/api/students"),
-      API("/api/users"),
-      API("/api/settings/batch"),
-    ]);
-    setStudents(st || []);
-    setUsers(us || []);
-    if (batch && typeof batch.rollover_hour === "number") {
-      const hh = String(batch.rollover_hour).padStart(2, "0");
-      setBatchSettings({ rolloverAt: `${hh}:00` });
+
+    const load = async () => {
+    try {
+      const [st, us, batch] = await Promise.all([
+        API("/api/students"),
+        API("/api/users"),
+        API("/api/settings/batch"),
+      ]);
+      setStudents(st || []);
+      setUsers(us || []);
+      if (batch && typeof batch.rollover_hour === "number") {
+        const hh = String(batch.rollover_hour).padStart(2, "0");
+        setBatchSettings({
+          rolloverAt: `${hh}:00`,
+          timezone: batch.rollover_timezone || "Europe/London",
+        });
+      }
+    } catch (e) {
+      console.error("Failed to load settings data", e);
     }
-  } catch (e) {
-    console.error("Failed to load settings data", e);
-  }
-};
+  };
+
 
 
   useEffect(() => {
@@ -489,26 +512,36 @@ const [batchSettings, setBatchSettings] = useState(() => {
     };
   }, [onClose]);
 
-  const saveBatchSettings = async () => {
-  try {
-    const [hh] = batchSettings.rolloverAt.split(":");
-    const hour = parseInt(hh, 10);
-    if (Number.isNaN(hour) || hour < 0 || hour > 23) {
-      alert("Please enter a valid hour between 00:00 and 23:59");
-      return;
+   useEffect(() => {
+    load();
+  }, []);
+
+   const saveBatchSettings = async () => {
+    try {
+      const [hh] = batchSettings.rolloverAt.split(":");
+      const hour = parseInt(hh, 10);
+      if (Number.isNaN(hour) || hour < 0 || hour > 23) {
+        alert("Please enter a valid hour between 00:00 and 23:59");
+        return;
+      }
+
+      await API("/api/settings/batch", {
+        method: "POST",
+        body: JSON.stringify({
+          rollover_hour: hour,
+          rollover_timezone: batchSettings.timezone || "Europe/London",
+        }),
+      });
+
+      localStorage.setItem("batchSettings", JSON.stringify(batchSettings));
+      alert(
+        "Rollover time updated – not-done tasks will be moved at this time in the selected timezone."
+      );
+    } catch (e) {
+      alert(e?.message || "Failed to save batch settings");
     }
+  };
 
-    await API("/api/settings/batch", {
-      method: "POST",
-      body: JSON.stringify({ rollover_hour: hour }),
-    });
-
-    localStorage.setItem("batchSettings", JSON.stringify(batchSettings));
-    alert("Rollover time updated – not-done tasks will be moved at this time.");
-  } catch (e) {
-    alert(e?.message || "Failed to save batch settings");
-  }
-};
 
 
   const createStudent = async () => {
@@ -630,30 +663,48 @@ const createUser = async () => {
           </button>
         </div>
 
-        {tab === "batch" && (
+{tab === "batch" && (
   <>
     <p className="help">
-  This time controls when all not-done tasks for today will be moved
-  automatically to tomorrow (same as “Move to next day”).
-</p>
+      This time controls when all not-done tasks for today will be moved
+      automatically to tomorrow (same as “Move to next day”). Time is applied
+      in the selected timezone.
+    </p>
 
-<label className="label">Move not-done tasks at</label>
-<select
-  className="input"
-  value={batchSettings.rolloverAt}
-  onChange={(e) => setBatchSettings((s) => ({ ...s, rolloverAt: e.target.value }))}
->
-  {Array.from({ length: 24 }).map((_, h) => {
-    const label = `${String(h).padStart(2, "0")}:00`;
-    return (
-      <option key={h} value={label}>
-        {label}
-      </option>
-    );
-  })}
-</select>
+    <label className="label">Move not-done tasks at</label>
+    <select
+      className="input"
+      value={batchSettings.rolloverAt}
+      onChange={(e) =>
+        setBatchSettings((s) => ({ ...s, rolloverAt: e.target.value }))
+      }
+    >
+      {Array.from({ length: 24 }).map((_, h) => {
+        const label = `${String(h).padStart(2, "0")}:00`;
+        return (
+          <option key={h} value={label}>
+            {label}
+          </option>
+        );
+      })}
+    </select>
 
-
+    <label className="label" style={{ marginTop: 8 }}>
+      Timezone
+    </label>
+    <select
+      className="input"
+      value={batchSettings.timezone}
+      onChange={(e) =>
+        setBatchSettings((s) => ({ ...s, timezone: e.target.value }))
+      }
+    >
+      {TIMEZONES.map((tz) => (
+        <option key={tz.value} value={tz.value}>
+          {tz.label}
+        </option>
+      ))}
+    </select>
 
     <div className="btns" style={{ marginTop: 12 }}>
       <button className="btn" onClick={onClose}>
@@ -665,6 +716,7 @@ const createUser = async () => {
     </div>
   </>
 )}
+
 
 
         {tab === "users" && (
@@ -1009,19 +1061,19 @@ function CreateModal({ defaultAssigneeId = 2, onClose, onCreated }) {
     setErr("");
     try {
       await API(`/api/tasks`, {
-        method: "POST",
-        body: JSON.stringify({
-          student_id: Number(studentId),
-          title: title.trim(),
-          address: address.trim() || null,
-          body: reason ? reason.trim() : null,
-          due_at: defaultDueAt(),
-          assignee_user_id: defaultAssigneeId,
-          status: "Assigned",
-          checklist: [],
-          external_ref: null,
-        }),
-      });
+  method: "POST",
+  body: JSON.stringify({
+    student_id: Number(studentId),
+    title: title.trim(),
+    address: address.trim() || null,
+    body: reason ? reason.trim() : null,
+    due_at: defaultDueAt(),           // 👈 her
+    assignee_user_id: defaultAssigneeId,
+    status: "Assigned",
+    checklist: [],
+    external_ref: null,
+  }),
+});
       await onCreated();
       onClose();
     } catch (e) {

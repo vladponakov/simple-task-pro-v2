@@ -4,7 +4,9 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timedelta, date
-from typing import List, Optional
+import pytz
+from pytz import UnknownTimeZoneError
+from typing import List, Optional, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -122,36 +124,77 @@ def get_api_token(
     return x_api_token
 
 
+def _get_local_today_and_tz(rollover_tz_name: str) -> tuple[date, str]:
+    """
+    Returnerer (today_in_tz, tz_name_used) basert på valgt timezone.
+    Faller tilbake til UTC hvis tz ikke finnes.
+    """
+    try:
+        tz = pytz.timezone(rollover_tz_name)
+    except UnknownTimeZoneError:
+        logging.warning(
+            "Unknown timezone %s, falling back to UTC in _get_local_today_and_tz",
+            rollover_tz_name,
+        )
+        tz = pytz.UTC
+        rollover_tz_name = "UTC"
+
+    now_tz = datetime.now(tz)
+    return now_tz.date(), rollover_tz_name
+
+
 # -------------------- Rollover scheduler (background) --------------------
 
 
 async def rollover_scheduler_loop() -> None:
     """
-    Kjør i bakgrunnen:
-    - les rollover_hour fra AppSettings
-    - når vi er på riktig time/minutt -> kjør rollover
-    - sov litt og prøv igjen
+    Bakgrunnsjobb som:
+    - Leser rollover_hour + rollover_timezone fra AppSettings
+    - Bruker valgt timezone (f.eks. Europe/Oslo eller Europe/London)
+    - Kjører _run_rollover_not_done én gang per (dag + time + timezone)
     """
+    # gi appen litt tid til å starte
     await asyncio.sleep(5)
-    last_run_date: Optional[date] = None
+    last_run_key: Optional[str] = None  # f.eks. "2025-11-30-18-Europe/Oslo"
 
     while True:
         try:
-            now = datetime.utcnow()
-            today = now.date()
-
-            # Les innstilling fra DB
+            # 1) Les config fra DB
             db = SessionLocal()
             try:
                 s = db.query(AppSettings).get(1)
-                rollover_hour = s.rollover_hour if s and s.rollover_hour is not None else 18
+                rollover_hour = (
+                    s.rollover_hour if s and s.rollover_hour is not None else 18
+                )
+                rollover_tz_name = (
+                    s.rollover_timezone or "Europe/London"
+                    if s
+                    else "Europe/London"
+                )
             finally:
                 db.close()
 
+            # 2) Finn "i dag" i valgt timezone (pytz-basert)
+            today_tz, tz_name_used = _get_local_today_and_tz(rollover_tz_name)
+
+            # unik nøkkel per dag + time + timezone
+            current_key = f"{today_tz.isoformat()}-{rollover_hour}-{tz_name_used}"
+
+            # 3) Sjekk lokal tid i valgt timezone
+            try:
+                tz = pytz.timezone(tz_name_used)
+            except UnknownTimeZoneError:
+                tz = pytz.UTC
+                tz_name_used = "UTC"
+
+            now_local = datetime.now(tz)
+            local_hour = now_local.hour
+            local_minute = now_local.minute
+
             if (
-                now.hour == rollover_hour
-                and now.minute == 0
-                and last_run_date != today
+                local_hour == rollover_hour
+                and local_minute == 0
+                and last_run_key != current_key
             ):
                 db = SessionLocal()
                 try:
@@ -161,14 +204,15 @@ async def rollover_scheduler_loop() -> None:
                         .order_by(User.id.asc())
                         .first()
                     )
-                    moved = _run_rollover_not_done(db, actor)
+                    moved = _run_rollover_not_done(db, actor, today=today_tz)
                     logging.info(
-                        "Background rollover_not_done: moved %s tasks on %s (hour=%s)",
+                        "Background rollover_not_done: moved %s tasks on %s (hour=%s, tz=%s)",
                         moved,
-                        today,
+                        today_tz,
                         rollover_hour,
+                        tz_name_used,
                     )
-                    last_run_date = today
+                    last_run_key = current_key
                 finally:
                     db.close()
 
@@ -257,7 +301,9 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         },
     }
 
+
 # -------------------- Health / Me --------------------
+
 
 @app.get("/health")
 @app.get("/api/health")
@@ -312,7 +358,11 @@ def add_comment(
 # -------------------- Students --------------------
 
 
-@app.post("/api/students", response_model=StudentOut, dependencies=[Depends(require_admin)])
+@app.post(
+    "/api/students",
+    response_model=StudentOut,
+    dependencies=[Depends(require_admin)],
+)
 def create_student(
     data: StudentIn,
     db: Session = Depends(get_db),
@@ -413,18 +463,18 @@ def create_absence(
 # -------------------- Tasks --------------------
 
 
-@app.post("/api/tasks", response_model=TaskOut, dependencies=[Depends(require_admin)])
+@app.post(
+    "/api/tasks",
+    response_model=TaskOut,
+    dependencies=[Depends(require_admin)],
+)
 def create_task(
     data: TaskIn,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     # 1) Finn studenten
-    student = (
-        db.query(Student)
-        .filter(Student.id == data.student_id)
-        .first()
-    )
+    student = db.query(Student).filter(Student.id == data.student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
@@ -432,8 +482,8 @@ def create_task(
     t = create_home_visit_task_for_student(
         db,
         student=student,
-        actor=user,                         # den innloggede adminen
-        body=data.body,                     # brukes hvis satt, ellers "Home Visite"
+        actor=user,  # den innloggede adminen
+        body=data.body,  # brukes hvis satt, ellers "Home Visite"
         assignee_user_id=data.assignee_user_id,
         due_at=data.due_at,
         external_ref=data.external_ref,
@@ -447,7 +497,6 @@ def create_task(
     # 3) Logg "create"-event (helperen gjør ikke dette)
     log_event(db, t, user, TaskEventType.EDIT, {"create": True})
     return t
-
 
 
 @app.get("/api/tasks", response_model=List[TaskOut])
@@ -861,16 +910,42 @@ def batch_rollover_not_done(
     actor: User = Depends(get_admin_user),
     _token: Optional[str] = Depends(get_api_token),
 ) -> dict:
-    moved = _run_rollover_not_done(db, actor)
+    """
+    Manuell trigger (fra Make.com / admin) av rollover.
+    Bruker samme timezone-logikk som scheduleren.
+    """
+    s = db.query(AppSettings).get(1)
+    rollover_tz_name = (
+        s.rollover_timezone or "Europe/London"
+        if s
+        else "Europe/London"
+    )
+
+    today_tz, tz_name_used = _get_local_today_and_tz(rollover_tz_name)
+    moved = _run_rollover_not_done(db, actor, today=today_tz)
+    logging.info(
+        "Manual batch rollover_not_done: moved %s tasks on %s (tz=%s)",
+        moved,
+        today_tz,
+        tz_name_used,
+    )
     return {"moved": moved}
 
 
-def _run_rollover_not_done(db: Session, actor: User | None = None) -> int:
+def _run_rollover_not_done(
+    db: Session,
+    actor: User | None = None,
+    today: Optional[date] = None,
+) -> int:
     """
     Faktisk jobb som flytter dagens ikke-ferdige tasks til i morgen.
     Brukes både av API-endepunktet og av bakgrunnsscheduler.
+
+    :param today: dato i valgt timezone (hvis None -> UTC-dato).
     """
-    today = datetime.utcnow().date()
+    if today is None:
+        today = datetime.utcnow().date()
+
     tasks = (
         db.query(Task)
         .filter(
@@ -882,10 +957,13 @@ def _run_rollover_not_done(db: Session, actor: User | None = None) -> int:
     )
 
     moved = 0
+    tomorrow = today + timedelta(days=1)
+
     for t in tasks:
-        tomorrow = today + timedelta(days=1)
         if not t.due_at:
+            # fallback: sett til i dag kl 10:00 før vi flytter
             t.due_at = datetime.combine(today, datetime.min.time()).replace(hour=10)
+        # Behold tidspunkt på dagen, bare flytt dato til i morgen
         t.due_at = datetime.combine(tomorrow, t.due_at.time())
         db.add(t)
         moved += 1
@@ -1024,7 +1102,6 @@ def batch_import_students(
         out.append(s)
 
         # --- Hvis eleven er markert som absent today → lag dagens task ---
-                # --- Hvis eleven er markert som absent today → lag dagens task ---
         if s.absent_today:
             existing = (
                 db.query(Task)
@@ -1077,10 +1154,16 @@ def batch_import_students(
 def get_batch_settings(db: Session = Depends(get_db)):
     s = db.query(AppSettings).get(1)
     if not s:
-        s = AppSettings(id=1, rollover_hour=18)
+        # default: 18:00 London-tid
+        s = AppSettings(id=1, rollover_hour=18, rollover_timezone="Europe/London")
         db.add(s)
         db.commit()
         db.refresh(s)
+
+    # fallback hvis gamle rader mangler timezone
+    if not s.rollover_timezone:
+        s.rollover_timezone = "Europe/London"
+
     return s
 
 
@@ -1102,6 +1185,8 @@ def update_batch_settings(
         db.add(s)
 
     s.rollover_hour = data.rollover_hour
+    s.rollover_timezone = data.rollover_timezone or s.rollover_timezone or "Europe/London"
+
     db.commit()
     db.refresh(s)
     return s
@@ -1110,12 +1195,20 @@ def update_batch_settings(
 # -------------------- Users & admin helpers --------------------
 
 
-@app.get("/api/users", response_model=List[UserOut], dependencies=[Depends(require_admin)])
+@app.get(
+    "/api/users",
+    response_model=List[UserOut],
+    dependencies=[Depends(require_admin)],
+)
 def list_users(db: Session = Depends(get_db)):
     return db.query(User).order_by(User.id.asc()).all()
 
 
-@app.post("/api/users", response_model=UserOut, dependencies=[Depends(require_admin)])
+@app.post(
+    "/api/users",
+    response_model=UserOut,
+    dependencies=[Depends(require_admin)],
+)
 def create_user(data: UserCreate, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == data.email).first()
     if existing:
