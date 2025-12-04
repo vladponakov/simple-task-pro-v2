@@ -10,14 +10,14 @@ from typing import List, Optional, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import func, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from starlette.responses import Response
-
+from starlette.middleware.sessions import SessionMiddleware
 from app.config import settings
 from app.db import Base, engine, get_db, SessionLocal
 from app.models import (
@@ -44,12 +44,15 @@ from app.schemas import (
     StatusIn,
     StudentIn,
     StudentOut,
+    StudentCreate,
     TaskEdit,
     TaskEventOut,
     TaskIn,
     TaskOut,
     UserCreate,
     UserOut,
+    UserUpdate,  
+    MeUpdate,
 )
 from app.utils import (
     hash_password,
@@ -227,9 +230,18 @@ async def rollover_scheduler_loop() -> None:
             await asyncio.sleep(60)
 
 
+import os
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.config import Config as StarletteConfig
+from authlib.integrations.starlette_client import OAuth
+
+from .config import settings
+
 # -------------------- App + CORS --------------------
 
-
+# CORS_ORIGINS kan komme som liste (standard) eller som string via env
 if isinstance(settings.CORS_ORIGINS, str):
     _origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 else:
@@ -237,6 +249,31 @@ else:
 
 app = FastAPI(title="Visit Task Pro API v2")
 
+# ---- Google OAuth client ----
+_starlette_config = StarletteConfig(environ=os.environ)
+oauth = OAuth(_starlette_config)
+
+if settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET:
+    oauth.register(
+        name="google",
+        client_id=settings.GOOGLE_CLIENT_ID,
+        client_secret=settings.GOOGLE_CLIENT_SECRET,
+        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        client_kwargs={"scope": "openid email profile"},
+    )
+else:
+    print(
+        "WARNING: Google OAuth is not fully configured – "
+        "GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET is missing"
+    )
+
+print(
+    "GOOGLE OAUTH CONFIG:",
+    bool(settings.GOOGLE_CLIENT_ID),
+    bool(settings.GOOGLE_CLIENT_SECRET),
+)
+
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
@@ -244,6 +281,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Sessions – nødvendig for Google OAuth (request.session)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key="super-secret-session-key-change-me",
+)
+
 
 # where the built frontend is copied by build step
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -259,30 +304,97 @@ async def no_cache_index(request: Request, call_next):
         resp.headers["Cache-Control"] = "no-store"
     return resp
 
-
-@app.on_event("startup")
-async def on_startup() -> None:
-    Base.metadata.create_all(bind=engine)
-    asyncio.create_task(rollover_scheduler_loop())
-   # --- MINI-MIGRERING FOR PROD: legg til rollover_timezone hvis den mangler ---
-    with engine.connect() as conn:
-        try:
-            conn.execute(
-                text("ALTER TABLE app_settings ADD COLUMN rollover_timezone VARCHAR(100)")
-            )
-            conn.commit()
-        except OperationalError:
-            # Kolonnen finnes allerede – helt fint lokalt / etter første deploy
-            pass
-
-    asyncio.create_task(rollover_scheduler_loop())
-
 # -------------------- Auth --------------------
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+@app.get("/api/auth/google/start")
+async def google_login(request: Request):
+    redirect_uri = request.url_for("google_auth_callback")
+    return await oauth.google.authorize_redirect(request, redirect_uri)
+
+@app.get("/api/auth/google/callback", name="google_auth_callback")
+async def google_auth_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Callback fra Google – logger inn / lager bruker og skriver til localStorage."""
+    try:
+        # 1) Hent token + userinfo fra Google
+        token = await oauth.google.authorize_access_token(request)
+        print("GOOGLE TOKEN:", token)
+
+        userinfo = token.get("userinfo") or {}
+        print("GOOGLE USERINFO:", userinfo)
+
+        email = (userinfo.get("email") or "").lower()
+        if not email:
+            raise HTTPException(status_code=400, detail="No email from Google")
+
+        # 2) Eventuell domenesjekk (ikke aktiv nå siden GOOGLE_ALLOWED_HD er tom/None)
+        if settings.GOOGLE_ALLOWED_HD:
+            hd = userinfo.get("hd")  # hosted domain
+            if hd != settings.GOOGLE_ALLOWED_HD:
+                raise HTTPException(status_code=403, detail="Google account not allowed")
+
+        # 3) Finn eller opprett bruker
+        user = db.query(User).filter(User.email == email).first()
+
+        if not user:
+            # Bruk navnet fra Google eller e-posten
+            name = userinfo.get("name") or email
+            user = User(
+                name=name,
+                email=email,
+                role=Role.USER,
+                password_hash=hash_password(os.urandom(16).hex()),
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            print("GOOGLE: created new user", user.id, user.email)
+        else:
+            print("GOOGLE: existing user", user.id, user.email)
+
+        # 4) Lag token i samme format som /api/login
+        api_token = f"user:{user.id}"
+
+        # 5) HTML som kjører i browseren, setter localStorage og redirecter til "/"
+        html = f"""
+        <html><body>
+        <script>
+          const token = "{api_token}";
+          const user = {{
+            id: {user.id},
+            name: "{user.name}",
+            email: "{user.email}",
+            role: "{user.role.value}"
+          }};
+
+          localStorage.setItem("auth_token", token);
+          localStorage.setItem("current_user", JSON.stringify(user));
+          localStorage.setItem("x_user", user.email);
+
+          window.location.replace("/");
+        </script>
+        Logging you in with Google...
+        </body></html>
+        """
+        return HTMLResponse(content=html)
+
+    except HTTPException:
+        # HTTPExceptions lar vi gå igjennom som normalt
+        raise
+    except Exception as e:
+        # Alt annet – logg og returner 500 med feilmelding
+        print("GOOGLE CALLBACK ERROR:", repr(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error in Google callback: {e}",
+        )
 
 
 @app.post("/api/login")
@@ -322,14 +434,26 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
 def health():
     return {"status": "ok"}
 
-
 @app.get("/api/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
     return user
 
 
-# -------------------- Comments --------------------
+@app.patch("/api/me", response_model=UserOut)
+def update_me(
+    data: MeUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if data.start_address is not None:
+        s = data.start_address.strip()
+        user.start_address = s or None
 
+    db.commit()
+    db.refresh(user)
+    return user
+
+# -------------------- Comments --------------------
 
 @app.get("/api/tasks/{task_id}/comments", response_model=List[CommentOut])
 def list_comments(
@@ -369,31 +493,25 @@ def add_comment(
 
 # -------------------- Students --------------------
 
-
 @app.post(
     "/api/students",
     response_model=StudentOut,
     dependencies=[Depends(require_admin)],
 )
 def create_student(
-    data: StudentIn,
+    data: StudentCreate,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     s = Student(
-        name=data.name,
-        student_class=data.student_class,
-        address=data.address,
-        attendance_pct=data.attendance_pct,
-        absence_pct=data.absence_pct,
-        last_absence_date=data.last_absence_date,
-        last_absence_reason=data.last_absence_reason,
+        name=data.name.strip(),
+        student_class=data.student_class.strip() if data.student_class else None,
+        address=data.address.strip() if data.address else None,
     )
     db.add(s)
     db.commit()
     db.refresh(s)
     return s
-
 
 @app.get("/api/students", response_model=List[StudentOut])
 def list_students(
@@ -474,11 +592,9 @@ def create_absence(
 
 # -------------------- Tasks --------------------
 
-
 @app.post(
     "/api/tasks",
     response_model=TaskOut,
-    dependencies=[Depends(require_admin)],
 )
 def create_task(
     data: TaskIn,
@@ -490,14 +606,22 @@ def create_task(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    # 2) Opprett task via felles helper
+    # 2) Bestem hvem tasken skal assignes til
+    if user.role == Role.ADMIN:
+        # Admin kan velge fri assignee fra payload
+        effective_assignee = data.assignee_user_id
+    else:
+        # Vanlig bruker: alltid til seg selv, ignorerer ev. assignee i payload
+        effective_assignee = user.id
+
+    # 3) Opprett task via felles helper
     t = create_home_visit_task_for_student(
         db,
         student=student,
-        actor=user,  # den innloggede adminen
-        body=data.body,  # brukes hvis satt, ellers "Home Visite"
-        assignee_user_id=data.assignee_user_id,
-        due_at=data.due_at,
+        actor=user,  # den innloggede (admin eller bruker)
+        body=data.body,  # reason
+        assignee_user_id=effective_assignee,
+        due_at=data.due_at,        # hvis tom → helper setter standard (10:00)
         external_ref=data.external_ref,
         checklist=data.checklist,
         attendance_pct=data.attendance_pct,
@@ -506,10 +630,46 @@ def create_task(
         visit_notes=data.visit_notes,
     )
 
-    # 3) Logg "create"-event (helperen gjør ikke dette)
+    # 4) Logg event
     log_event(db, t, user, TaskEventType.EDIT, {"create": True})
     return t
 
+@app.patch(
+    "/api/users/{user_id}",
+    response_model=UserOut,
+    dependencies=[Depends(require_admin)],
+)
+def update_user(
+    user_id: int,
+    data: UserUpdate,
+    db: Session = Depends(get_db),
+):
+    u = db.query(User).filter(User.id == user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Endre navn
+    if data.name is not None:
+        s = data.name.strip()
+        if s:
+            u.name = s
+
+    # Endre rolle (User/Admin)
+    if data.role is not None:
+        u.role = data.role
+
+    # Endre start_address
+    if data.start_address is not None:
+        s = data.start_address.strip()
+        u.start_address = s or None
+
+    # Endre passord
+    if data.password is not None:
+        u.password_hash = hash_password(data.password)
+
+    db.commit()
+    db.refresh(u)
+    return u
 
 @app.get("/api/tasks", response_model=List[TaskOut])
 def list_tasks(
@@ -571,6 +731,7 @@ def edit_task(
     if not t:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    # Bygg payload ut fra det som faktisk er sendt inn
     payload = data.model_dump(exclude_unset=True)
 
     # Unify "reason" -> "body" så Edit Reason og Reject Reason deler samme felt
@@ -579,9 +740,16 @@ def edit_task(
 
     # Ikke-admin har begrenset hva de kan endre
     if user.role != Role.ADMIN:
+        # Må være assignee eller creator
         if t.assignee_user_id != user.id and t.created_by != user.id:
             raise HTTPException(status_code=403, detail="Forbidden")
-        allowed = {"checklist", "address", "reason", "due_at", "title", "body"}
+
+        # Fjern felter som vanlige brukere aldri får lov til å tukle med
+        for blocked in ("assignee_user_id", "external_ref", "status", "created_by"):
+            payload.pop(blocked, None)
+
+        # Disse feltene er lov for vanlige brukere
+        allowed = {"checklist", "address", "body", "due_at", "title"}
         disallowed = set(payload.keys()) - allowed
         if disallowed:
             raise HTTPException(
@@ -601,7 +769,6 @@ def edit_task(
     if "assignee_user_id" in payload and user.role == Role.ADMIN:
         new_assignee = payload["assignee_user_id"]
 
-        # Oppdater status på samme måte som /assign-endepunktet
         if t.status in [TaskStatus.NEW, TaskStatus.REJECTED]:
             t.status = TaskStatus.ASSIGNED
             changed["status"] = t.status
@@ -628,6 +795,7 @@ def edit_task(
         log_event(db, t, user, TaskEventType.EDIT, {"changed": changed})
 
     return t
+
 
 
 @app.delete("/api/tasks/{task_id}", dependencies=[Depends(require_admin)])
@@ -1242,13 +1410,18 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
     u = db.query(User).filter(User.id == user_id).first()
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
-    # protect demo seed users
+
+    # ❌ aldri tillat å slette admin-brukere
+    if u.role == Role.ADMIN:
+        raise HTTPException(status_code=400, detail="Cannot delete admin user")
+
+    # protect demo seed users (1,2,3)
     if u.id in (1, 2, 3):
         raise HTTPException(status_code=400, detail="Cannot delete demo user")
+
     db.delete(u)
     db.commit()
     return {"ok": True}
-
 
 @app.delete("/api/students/{student_id}", dependencies=[Depends(require_admin)])
 def delete_student(student_id: int, db: Session = Depends(get_db)):

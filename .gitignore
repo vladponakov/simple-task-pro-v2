@@ -21,3 +21,21 @@ Thumbs.db
 
 # Misc
 *.zip
+
+# Python venv
+.venv/
+backend/venv/
+
+# Node / frontend builds
+frontend/node_modules/
+frontend/dist/
+
+# Bygget frontend som kopieres inn i backend
+backend/app/static/
+
+# Lokale miljøvariabler
+frontend/.env.local
+
+# Python cache
+__pycache__/
+*.pyc

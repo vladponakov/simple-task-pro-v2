@@ -112,36 +112,48 @@ const defaultDueAt = () => {
   return `${y}-${m}-${day}T${hh}:${mm}:${ss}`;
 };
 
-function buildSmartRouteUrl(addresses) {
-  if (!addresses || addresses.length === 0) return null;
-  const enc = (s) => encodeURIComponent(s || "London");
-  if (addresses.length === 1) {
-    return `https://www.google.com/maps/dir/?api=1&destination=${enc(
-      addresses[0]
-    )}`;
-  }
-  const dest = enc(addresses[addresses.length - 1]);
-  const waypoints = addresses.slice(0, -1).map(enc).join("|");
-  return `https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${dest}&waypoints=${waypoints}`;
-}
+// stops = all student addresses
+// startAddress = optional fixed origin ("My school", "Big Ben", etc)
+// ✅ External Google Maps directions URL
+// 🔹 FULL MAP – use device position ("Posisjonen din")
+function buildSmartRouteUrl(stops) {
+  const enc = (s) => encodeURIComponent(s || "");
+  if (!Array.isArray(stops) || stops.length === 0) return null;
 
-// ✅ Embed API variant – requires VITE_GOOGLE_MAPS_EMBED_KEY
-function buildSmartRouteEmbedUrl(addresses) {
-  const key = import.meta.env?.VITE_GOOGLE_MAPS_EMBED_KEY;
-  if (!key) return null;
-  if (!addresses || addresses.length === 0) return null;
+  const destination = enc(stops[stops.length - 1]);
+  const waypoints = stops.slice(0, -1).map(enc).join("|");
 
-  const enc = (s) => encodeURIComponent(s || "London");
-  const origin = enc(addresses[0]);
-  const destination = enc(addresses[addresses.length - 1]);
-  const waypoints = addresses.slice(1, -1).map(enc).join("|");
-
-  let url = `https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${origin}&destination=${destination}&mode=driving`;
-  if (waypoints) {
-    url += `&waypoints=${waypoints}`;
-  }
+  // 💡 no origin here on purpose → Google uses "Posisjonen din"
+  let url = "https://www.google.com/maps/dir/?api=1&travelmode=driving";
+  url += `&destination=${destination}`;
+  if (waypoints) url += `&waypoints=${waypoints}`;
   return url;
 }
+
+// 🔹 EMBED map – needs explicit origin (startAddress or first stop)
+function buildSmartRouteEmbedUrl(stops, startAddress) {
+  const key = import.meta.env?.VITE_GOOGLE_MAPS_EMBED_KEY;
+  if (!key) return null;
+  if (!Array.isArray(stops) || stops.length === 0) return null;
+
+  const enc = (s) => encodeURIComponent(s || "");
+
+  const hasOrigin = !!(startAddress && startAddress.trim());
+  const origin = hasOrigin
+    ? enc(startAddress.trim())
+    : enc(stops[0]); // fallback: first stop
+
+  const destination = enc(stops[stops.length - 1]);
+
+  // use middle stops as waypoints (avoid duplicating origin)
+  const middleStops = hasOrigin ? stops : stops.slice(1);
+  const waypoints = middleStops.slice(0, -1).map(enc).join("|");
+
+  let url = `https://www.google.com/maps/embed/v1/directions?key=${key}&origin=${origin}&destination=${destination}&mode=driving`;
+  if (waypoints) url += `&waypoints=${waypoints}`;
+  return url;
+}
+
 
 const titleCase = (s) =>
   (s || "")
@@ -173,117 +185,122 @@ const USERS = [
    BLOCK: LOGIN
    ================================================================= */
 
-function Login() {
+function Login({ onLoggedIn }) {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const login = async () => {
-    const emailTrimmed = email.trim().toLowerCase();
-    const pwTrimmed = pw.trim();
-
-    if (!emailTrimmed || !pwTrimmed) {
-      alert("Please enter email and password.");
-      return;
+const login = async () => {
+  if (!email || !pw) return;
+  setLoading(true);
+  try {
+    const res = await fetch(`${API_BASE}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: pw }),
+    });
+    if (!res.ok) {
+      throw new Error("Invalid email or password");
     }
+    const data = await res.json();
+    const { token, user } = data;
 
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: emailTrimmed, password: pwTrimmed }),
-      });
+    localStorage.setItem("auth_token", token);
+    localStorage.setItem("current_user", JSON.stringify(user));
+    localStorage.setItem("x_user", user.email);
 
-      if (!res.ok) {
-        let detail = "Login failed";
-        try {
-          const j = await res.json();
-          if (j?.detail) detail = j.detail;
-        } catch {
-          /* ignore */
-        }
-        throw new Error(detail);
-      }
+    // ✅ samme flow som Google OAuth
+    window.location.replace("/");
+  } catch (err) {
+    alert((err && err.message) || "Login failed");
+  } finally {
+    setLoading(false);
+  }
+};
 
-      const data = await res.json();
 
-      // token fra backend – vi støtter flere navn
-      const token =
-        data.token ||
-        data.access_token ||
-        data.auth_token ||
-        data.jwt ||
-        null;
 
-      // bruker-objekt fra backend
-      const user =
-        data.user ||
-        {
-          id: data.id,
-          name: data.name || emailTrimmed,
-          email: data.email || emailTrimmed,
-          role: data.role || "User",
-        };
 
-      if (token) {
-        localStorage.setItem("auth_token", token);
-      } else {
-        localStorage.removeItem("auth_token");
-      }
+  const loginWithGoogle = () => {
+    window.location.href = `${API_BASE}/api/auth/google/start`;
+  };
 
-      localStorage.setItem("current_user", JSON.stringify(user));
-      localStorage.setItem("x_user", user.email || emailTrimmed);
-
-      window.location.replace("/");
-    } catch (e) {
-      alert(e?.message || "Login failed");
-    } finally {
-      setLoading(false);
+  const onKeyDown = (e) => {
+    if (e.key === "Enter" && !loading) {
+      login();
     }
   };
 
   return (
-    <div className="auth-wrap">
-      <div className="auth-card glass">
-        <div className="brand-top">
-          <div className="brand-title">Visit Task Pro</div>
-          <div className="brand-sub">Sign in to continue</div>
+    <div className="auth-page">
+      <div className="auth-card">
+        <div className="auth-header">
+          <div className="auth-title">IDENTIFICATION</div>
         </div>
 
-        <div className="field">
-          <label className="label">Email</label>
-          <div className="input-wrap">
-            <input
-              className="input bare"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="your@email.com"
-            />
-          </div>
+  <button
+  className="google-btn"
+  type="button"
+  onClick={loginWithGoogle}
+  disabled={loading}
+>
+  <span className="google-icon-wrapper" aria-hidden="true">
+    <svg className="google-icon" viewBox="0 0 24 24">
+      {/* Enkel “G” med fire farger – ikke 100% logo, men Google-ish */}
+      <path
+        d="M12 3.5c2.1 0 3.7.8 4.9 1.9l-1.9 2a4.3 4.3 0 0 0-3-1.1c-2.4 0-4.3 1.8-4.3 4.2s1.9 4.2 4.3 4.2c2.2 0 3.6-1.4 3.9-3.2H12v-2.7h7.1c.1.4.2.9.2 1.5 0 4.2-2.8 7.2-7.3 7.2C7.6 18.9 4 15.4 4 11.5 4 7.6 7.6 4 12 4z"
+        fill="#4285F4"
+      />
+      <path d="M5.1 7.5 7.3 9.2" fill="#EA4335" />
+      <path d="M5 15.3 7.2 13.5" fill="#34A853" />
+      <path d="M15.8 6.1 18 4.3" fill="#FBBC05" />
+    </svg>
+  </span>
+  <span className="google-btn-text">Sign in with Google</span>
+</button>
+
+
+
+        <div className="auth-divider">
+          <span>OR</span>
         </div>
 
-        <div className="field">
-          <label className="label">Password</label>
-          <div className="input-wrap">
-            <input
-              type="password"
-              className="input bare"
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              placeholder="••••••••"
-            />
-          </div>
+        <div className="auth-field">
+          <label className="auth-label">Login</label>
+          <input
+            className="auth-input"
+            type="email"
+            placeholder="you@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            onKeyDown={onKeyDown}
+          />
+        </div>
+
+        <div className="auth-field">
+          <label className="auth-label">Password</label>
+          <input
+            className="auth-input"
+            type="password"
+            placeholder="••••••••"
+            value={pw}
+            onChange={(e) => setPw(e.target.value)}
+            onKeyDown={onKeyDown}
+          />
         </div>
 
         <button
-          className="btn btn-primary wide"
+          className="auth-submit"
+          type="button"
           onClick={login}
-          disabled={loading}
+          disabled={loading || !email || !pw}
         >
-          {loading ? "Signing in..." : "Sign in"}
+          {loading ? "Logging in..." : "Log In"}
         </button>
+
+        <div className="auth-footer">
+          <span>Visit Task Pro</span>
+        </div>
       </div>
     </div>
   );
@@ -393,29 +410,27 @@ function Header({
         </div>
 
         <div className="menu">
-          {isAdmin && (
-            <button
-              className="mitem mitem--action"
-              onClick={() => {
-                setDrawerOpen(false);
-                onCreate();
-              }}
-            >
-              + New task
-            </button>
-          )}
+  <button
+    className="mitem mitem--action"
+    onClick={() => {
+      setDrawerOpen(false);
+      onCreate();
+    }}
+  >
+    + New task
+  </button>
 
-          {isAdmin && (
-            <button
-              className="mitem"
-              onClick={() => {
-                setDrawerOpen(false);
-                onOpenSettings();
-              }}
-            >
-              Settings
-            </button>
-          )}
+  <button
+  className="mitem"
+  onClick={() => {
+    setDrawerOpen(false);
+    onOpenSettings();
+  }}
+>
+  Settings
+</button>
+
+
 
           <button
             className="mitem mitem--danger"
@@ -440,7 +455,9 @@ function Header({
    ================================================================= */
 function SettingsModal({ onClose }) {
   const [tab, setTab] = useState("batch"); // batch | students | users
-
+  const [editUserId, setEditUserId] = useState("");
+  const [editUserRole, setEditUserRole] = useState("USER");
+  const [editUserStartAddress, setEditUserStartAddress] = useState("");
   const [students, setStudents] = useState([]);
   const [users, setUsers] = useState([]);
 
@@ -515,6 +532,21 @@ const TIMEZONES = [
    useEffect(() => {
     load();
   }, []);
+
+    useEffect(() => {
+    if (!editUserId) {
+      setEditUserRole("USER");
+      setEditUserStartAddress("");
+      return;
+    }
+    const u = users.find((x) => String(x.id) === String(editUserId));
+    if (!u) return;
+
+    const r = (u.role || "").toString().toUpperCase();
+    setEditUserRole(r === "ADMIN" ? "ADMIN" : "USER");
+    setEditUserStartAddress(u.start_address || "");
+  }, [editUserId, users]);
+
 
    const saveBatchSettings = async () => {
     try {
@@ -764,23 +796,105 @@ const createUser = async () => {
 
             <label className="label">Delete user</label>
             <select
-              className="select"
-              value={deleteUserId}
-              onChange={(e) => setDeleteUserId(e.target.value)}
-            >
-              <option value="">Select…</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  #{u.id} {u.name} ({u.role})
-                </option>
-              ))}
-            </select>
+  className="select"
+  value={deleteUserId}
+  onChange={(e) => setDeleteUserId(Number(e.target.value))}
+>
+  <option value="">Select…</option>
+  {users
+    .filter(
+      (u) => u.role !== "Admin" && u.role !== "ADMIN" // ikke list admin for delete
+    )
+    .map((u) => (
+      <option key={u.id} value={u.id}>
+        #{u.id} {u.name} ({u.role})
+      </option>
+    ))}
+</select>
+
 
             <div className="btns" style={{ marginTop: 8 }}>
               <button className="btn btn-danger" onClick={deleteUser}>
                 Delete selected
               </button>
             </div>
+
+<hr style={{ margin: "16px 0" }} />
+
+<label className="label">Change role</label>
+<select
+  className="select"
+  value={editUserId}
+  onChange={(e) => setEditUserId(e.target.value)}
+>
+  <option value="">Select user…</option>
+  {users.map((u) => (
+    <option key={u.id} value={u.id}>
+      #{u.id} {u.name} ({u.role})
+    </option>
+  ))}
+</select>
+
+<label className="label" style={{ marginTop: 8 }}>New role</label>
+<select
+  className="select"
+  value={editUserRole}
+  onChange={(e) => setEditUserRole(e.target.value)}
+>
+  <option value="USER">User</option>
+  <option value="ADMIN">Admin</option>
+</select>
+
+<label className="label" style={{ marginTop: 8 }}>Start address</label>
+<input
+  className="input"
+  value={editUserStartAddress}
+  onChange={(e) => setEditUserStartAddress(e.target.value)}
+  placeholder="Optional default start address"
+/>
+
+<div className="btns" style={{ marginTop: 8 }}>
+  <button
+    className="btn"
+    onClick={async () => {
+      if (!editUserId) return;
+
+      const backendRole =
+        editUserRole === "ADMIN" || editUserRole === "Admin"
+          ? "Admin"
+          : "User";
+
+      try {
+        await API(`/api/users/${editUserId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            role: backendRole,
+            start_address: editUserStartAddress.trim() || null,
+          }),
+        });
+
+        const us = await API("/api/users");
+        setUsers(us || []);
+
+        // 🔄 Oppdater innlogget bruker i localStorage også
+        try {
+          const me = await API("/api/me");
+          localStorage.setItem("current_user", JSON.stringify(me));
+        } catch {
+          // ignore, route funker uansett etter reload
+        }
+
+        alert("User updated");
+      } catch (e) {
+        alert(e?.message || "Failed to update user");
+      }
+    }}
+  >
+    Update user
+  </button>
+</div>
+
+
 
             <div className="meta" style={{ marginTop: 8, fontSize: 12 }}>
               Total users: {users.length}
@@ -792,6 +906,75 @@ const createUser = async () => {
   );
 }
 /* =========================== END BLOCK =========================== */
+
+function ProfileSettingsModal({ onClose }) {
+  const [startAddress, setStartAddress] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    API("/api/me")
+      .then((me) => {
+        if (me) {
+          setStartAddress(me.start_address || "");
+          localStorage.setItem("current_user", JSON.stringify(me));
+        }
+      })
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const updated = await API("/api/me", {
+        method: "PATCH",
+        body: JSON.stringify({
+          start_address: startAddress.trim(),
+        }),
+      });
+      localStorage.setItem("current_user", JSON.stringify(updated));
+      alert("Saved");
+      onClose();
+    } catch (e) {
+      alert(e?.message || "Failed to save settings");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="modal"
+        style={{ maxWidth: 480 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3>My settings</h3>
+
+        <p className="help">
+          Set your default starting address. All route maps and Smart Route
+          will start from this address in Google Maps.
+        </p>
+
+        <label className="label">Start address</label>
+        <input
+          className="input"
+          value={startAddress}
+          onChange={(e) => setStartAddress(e.target.value)}
+          placeholder="e.g. London or home address"
+        />
+
+        <div className="btns" style={{ marginTop: 12 }}>
+          <button className="btn" onClick={save} disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </button>
+          <button className="btn btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 /* ================================================================
    BLOCK: COMMENTS / HISTORY / CREATE / EDIT
@@ -1162,6 +1345,20 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
 
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [users, setUsers] = useState([]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    API("/api/users")
+      .then((data) => {
+        setUsers(data || []);
+      })
+      .catch(() => {
+        setUsers([]);
+      });
+  }, [isAdmin]);
+
 
   useEffect(() => {
     const onEsc = (e) => e.key === "Escape" && onClose();
@@ -1191,15 +1388,19 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
     setChecklist(copy);
   };
 
-  const payloadBase = {
-    title,
-    address: address || null,
-    due_at: toIso(dueAt) || null,
-    reason: reason || null,
-    checklist,
-    external_ref: task.external_ref ?? null,
-  };
-  if (isAdmin) payloadBase.assignee_user_id = Number(assignee);
+ const payloadBase = {
+  title,
+  address: address || null,
+  due_at: toIso(dueAt) || null,
+  reason: reason || null,
+  checklist,
+};
+
+if (isAdmin) {
+  payloadBase.assignee_user_id = Number(assignee);
+  payloadBase.external_ref = task.external_ref ?? null;
+}
+
 
   const save = async () => {
     setSaving(true);
@@ -1348,23 +1549,24 @@ function EditModal({ task, onClose, onSaved, isAdmin }) {
         </div>
 
         {isAdmin && (
-          <div className="row" style={{ gap: 8, marginTop: 10 }}>
-            <label className="label" style={{ margin: 0 }}>
-              Assign to
-            </label>
-            <select
-              className="select"
-              value={assignee}
-              onChange={(e) => setAssignee(e.target.value)}
-            >
-              {USERS.filter((u) => u.id !== 1).map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+  <div className="row" style={{ gap: 8, marginTop: 10 }}>
+    <label className="label" style={{ margin: 0 }}>
+      Assign to
+    </label>
+    <select
+      className="select"
+      value={assignee}
+      onChange={(e) => setAssignee(Number(e.target.value))}
+    >
+      {users.map((u) => (
+        <option key={u.id} value={u.id}>
+          {u.name} ({u.email})
+        </option>
+      ))}
+    </select>
+  </div>
+)}
+
 
         <div
           className="btns"
@@ -2062,7 +2264,7 @@ const [statusScope, setStatusScope] = useState("today"); // today | rejected | d
 /* ================================================================
    BLOCK: ROUTE_MAP + ROUTE_TAB
    ================================================================= */
-function RouteMapPanel({ tasks, title, subtitle }) {
+function RouteMapPanel({ tasks, title, subtitle, startAddress }) {
   const sorted = useMemo(
     () =>
       (tasks || [])
@@ -2071,49 +2273,36 @@ function RouteMapPanel({ tasks, title, subtitle }) {
     [tasks]
   );
 
-  const addresses = sorted.map((t) => t.address).filter(Boolean);
+  // bare stoppene, ingen startAddress her
+  const stops = useMemo(
+    () => sorted.map((t) => t.address).filter(Boolean),
+    [sorted]
+  );
 
-  // 🔗 External route + 🗺️ Embed route
-  const mapUrl = buildSmartRouteUrl(addresses);
-  const embedUrl = buildSmartRouteEmbedUrl(addresses);
+  const start = (startAddress || "").trim();
 
-  const stops = sorted.length;
+  // 🗺️ full map → device position origin
+  const mapUrl = buildSmartRouteUrl(stops);
+
+  // 🧭 embed → use start (or first stop) as origin
+  const embedUrl = buildSmartRouteEmbedUrl(stops, start || undefined);
+
+  const stopCount = sorted.length;
   const first = sorted[0];
   const last = sorted[sorted.length - 1];
 
   return (
     <section className="route-layout">
       <div className="route-map card route-map-card">
-        <div className="route-map-header">
-          <div>
-            <div className="route-map-title">{title}</div>
-            {subtitle && <div className="route-map-sub">{subtitle}</div>}
-            <div className="route-map-meta">
-              {stops ? (
-                <>
-                  {stops} stops
-                  {first?.due_at && last?.due_at && (
-                    <>
-                      {" "}
-                      · {fmtNO(first.due_at)} – {fmtNO(last.due_at)}
-                    </>
-                  )}
-                </>
-              ) : (
-                <>No active visits with address.</>
-              )}
-            </div>
-          </div>
-          {mapUrl && (
-            <button
-              className="btn btn-primary"
-              onClick={() => window.open(mapUrl, "_blank")}
-            >
-              Open full map
-            </button>
-          )}
-        </div>
-
+        {/* ... header etc ... */}
+        {mapUrl && (
+          <button
+            className="btn btn-primary"
+            onClick={() => window.open(mapUrl, "_blank")}
+          >
+            Open full map
+          </button>
+        )}
         {embedUrl ? (
           <div className="route-map-frame-wrap">
             <iframe
@@ -2125,9 +2314,7 @@ function RouteMapPanel({ tasks, title, subtitle }) {
             />
           </div>
         ) : (
-          <div className="route-map-empty">
-            Google map will come in future
-          </div>
+          <div className="route-map-empty">Google map will come in future</div>
         )}
       </div>
 
@@ -2156,17 +2343,19 @@ function RouteMapPanel({ tasks, title, subtitle }) {
   );
 }
 
-function RouteTab({ tasksForMeToday }) {
+function RouteTab({ tasksForMeToday, startAddress }) {
   return (
     <div className="route-tab">
       <RouteMapPanel
         tasks={tasksForMeToday}
         title="Today's route"
         subtitle="Your planned visits"
+        startAddress={startAddress}
       />
     </div>
   );
 }
+
 /* =========================== END BLOCK =========================== */
 
 /* ================================================================
@@ -2211,7 +2400,7 @@ function App() {
     if (authed && path === "/login") window.location.replace("/");
   }, [authed, path]);
 
-  if (!authed) return <Login />;
+  if (!authed) return <Login onLoggedIn={() => setAuthed(true)} />;
 
   let currentUser = null;
   try {
@@ -2238,12 +2427,15 @@ function App() {
     (t) => onlyDateStr(t.due_at) === todayISO
   );
 
-  const openSmartRoute = () => {
-    if (!tasksForMeToday.length) return;
-    const addrs = tasksForMeToday.map((t) => t.address).filter(Boolean);
-    const url = buildSmartRouteUrl(addrs);
-    if (url) window.open(url, "_blank");
-  };
+const openSmartRoute = () => {
+  if (!tasksForMeToday.length) return;
+
+  const stops = tasksForMeToday.map((t) => t.address).filter(Boolean);
+  const url = buildSmartRouteUrl(stops); // 👈 no startAddress here
+  if (url) window.open(url, "_blank");
+};
+
+
 
   const [editTask, setEditTask] = useState(null);
   useEffect(() => {
@@ -2305,53 +2497,57 @@ function App() {
           )}
         </div>
 
-        <div className="tabs-right">
+   <div className="tabs-right">
   <button
-    className="tab link no-shrink"
+   className="tab link no-shrink"
     onClick={reload}
-    aria-label="Refresh tasks"
-    title="Refresh tasks"
   >
     ↻ Refresh
   </button>
 
-  {isAdmin && (
-    <button
-      className="tab link no-shrink"
-      onClick={() => setShowCreate(true)}
-      aria-label="Create new task"
-    >
-      + New task
-    </button>
-  )}
+  <button
+    className="tab link no-shrink"
+    onClick={() => setShowCreate(true)}
+  >
+    + New task
+  </button>
 </div>
+
 
       </div>
 
       {activeTab === "board" ? (
-        <AdminBoard
-          compact={compact}
-          tasks={tasks}
-          reload={reload}
-          isAdmin={isAdmin}
-          meId={meId}
-          query={q}
-        />
-      ) : (
-        <RouteTab tasksForMeToday={tasksForMeToday} />
-      )}
+  <AdminBoard
+    compact={compact}
+    tasks={tasks}
+    reload={reload}
+    isAdmin={isAdmin}
+    meId={meId}
+    query={q}
+  />
+) : (
+  <RouteTab
+    tasksForMeToday={tasksForMeToday}
+    startAddress={currentUser?.start_address || ""}
+  />
+)}
 
-      {isAdmin && showCreate && (
+
+      {showCreate && (
         <CreateModal
-          defaultAssigneeId={2}
+          defaultAssigneeId={meId}  
           onClose={() => setShowCreate(false)}
           onCreated={reload}
         />
       )}
 
-      {isAdmin && showSettings && (
-        <SettingsModal onClose={() => setShowSettings(false)} />
-      )}
+      {showSettings &&
+  (isAdmin ? (
+    <SettingsModal onClose={() => setShowSettings(false)} />
+  ) : (
+    <ProfileSettingsModal onClose={() => setShowSettings(false)} />
+  ))}
+
 
       {editTask && (
         <EditModal

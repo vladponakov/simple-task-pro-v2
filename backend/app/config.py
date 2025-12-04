@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     API_TOKEN: str | None = "DEV_TOKEN_123"
     REQUIRE_API_TOKEN: bool = True
 
+    # ---- Google login ----
+    GOOGLE_CLIENT_ID: str | None = None
+    GOOGLE_CLIENT_SECRET: str | None = None
+    GOOGLE_ALLOWED_HD: str | None = None
+
     # ---- Restore-vindu for soft delete (timer) ----
     RESTORE_WINDOW_HOURS: int = 24
 

@@ -36,6 +36,7 @@ class UserBase(ORMModel):
     name: str
     email: EmailStr
     role: Role
+    start_address: Optional[str] = None
 
 
 class UserOut(UserBase):
@@ -49,6 +50,17 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=4)
 
 
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[Role] = None
+    password: Optional[str] = Field(default=None, min_length=4)
+    start_address: Optional[str] = None
+
+
+class MeUpdate(BaseModel):
+    start_address: Optional[str] = None
+
+
 # ---------------- Students & absences ----------------
 
 
@@ -60,26 +72,30 @@ class StudentIn(BaseModel):
 
     admission_number: Optional[str] = None  # "Admission Number"
 
-    year: Optional[str] = None             # "Year"
-    first_name: str                        # "First name"
-    last_name: str                         # "Last name"
-    gender: Optional[str] = None           # "Gender"
-    address: Optional[str] = None          # "Student address"
+    year: Optional[str] = None  # "Year"
+    first_name: str  # "First name"
+    last_name: str  # "Last name"
+    gender: Optional[str] = None  # "Gender"
+    address: Optional[str] = None  # "Student address"
 
-    contact_name: Optional[str] = None             # "Contact 1 Name"
-    contact_relationship: Optional[str] = None     # "Contact 1 Relationship"
-    contact_phone: Optional[str] = None            # "Contact 1 Telephone"
+    contact_name: Optional[str] = None  # "Contact 1 Name"
+    contact_relationship: Optional[str] = None  # "Contact 1 Relationship"
+    contact_phone: Optional[str] = None  # "Contact 1 Telephone"
 
     # Absent Today → YES/NO i Excel, men Make.com konverterer til bool
     absent_today: bool = False
 
     # Attendance-prosent
-    attendance_ytd: Optional[float] = None          # "% YtD"
-    attendance_last_week: Optional[float] = None    # "Last week"
+    attendance_ytd: Optional[float] = None  # "% YtD"
+    attendance_last_week: Optional[float] = None  # "Last week"
     attendance_last_2_weeks: Optional[float] = None
     attendance_last_3_weeks: Optional[float] = None
     attendance_last_4_weeks: Optional[float] = None
 
+class StudentCreate(BaseModel):
+    name: str
+    student_class: Optional[str] = None
+    address: Optional[str] = None
 
 class StudentOut(ORMModel):
     id: int
@@ -236,10 +252,11 @@ class DoneExportItem(BaseModel):
 class BatchSettingsOut(BaseModel):
     rollover_hour: int
     rollover_timezone: str | None = None
+
     class Config:
         from_attributes = True
 
 
 class BatchSettingsUpdate(BaseModel):
     rollover_hour: int
-    rollover_timezone: str | None = None 
+    rollover_timezone: str | None = None

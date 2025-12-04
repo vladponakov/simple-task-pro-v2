@@ -81,6 +81,11 @@ def seed_minimal(db: Session) -> None:
         password_hash=hash_password("user2"),
     )
 
+    admin.start_address = "Big Ben, London SW1A 0AA, United Kingdom"
+    ulf.start_address = "71 Folkestone Road, London N18 2ER, United Kingdom"
+    una.start_address = "140 Bulwer Road, London N18 1QG, United Kingdom"
+
+
     db.add_all([admin, ulf, una])
     db.commit()
     db.refresh(admin)
